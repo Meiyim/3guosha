@@ -1,0 +1,12 @@
+{
+  "name": "sanguosha",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server/index.mjs",
+    "test": "node tests/test.mjs && node tests/test_join.mjs && node tests/test_game_e2e.mjs",
+    "test:unit": "node tests/test.mjs",
+    "test:e2e": "node tests/test_game_e2e.mjs",
+    "test:browser": "node tests/test_browser_sim.mjs"
+  }
+}

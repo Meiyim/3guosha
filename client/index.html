@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>三国杀 Online</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <!-- Lobby -->
+  <div id="lobby" class="screen active">
+    <h1>三国杀 Online</h1>
+    <div class="lobby-box">
+      <input id="player-name" type="text" placeholder="你的名字" maxlength="10">
+      <button id="btn-create">创建房间</button>
+      <div class="divider">或加入房间</div>
+      <input id="pin-input" type="text" placeholder="输入4位PIN" maxlength="4">
+      <button id="btn-join">加入</button>
+    </div>
+    <div id="lobby-status"></div>
+  </div>
+
+  <!-- Waiting -->
+  <div id="waiting" class="screen">
+    <h2>等待对手加入...</h2>
+    <p>房间PIN: <span id="room-pin" class="pin-display"></span></p>
+    <p>将此PIN分享给你的对手</p>
+  </div>
+
+  <!-- Hero Selection -->
+  <div id="hero-select" class="screen">
+    <h2>选择武将</h2>
+    <div id="hero-grid"></div>
+  </div>
+
+  <!-- Game Board -->
+  <div id="game" class="screen">
+    <div id="opponent-area"></div>
+    <div id="game-info">
+      <div id="deck-info"></div>
+      <div id="phase-info"></div>
+    </div>
+    <div id="action-area">
+      <div id="game-log"></div>
+      <div id="action-buttons"></div>
+    </div>
+    <div id="my-area">
+      <div id="my-info"></div>
+      <div id="my-hand"></div>
+    </div>
+  </div>
+
+  <!-- Game Over -->
+  <div id="gameover" class="screen">
+    <h2 id="gameover-msg"></h2>
+    <button onclick="location.reload()">再来一局</button>
+  </div>
+</div>
+<script src="js/app.js?v=2"></script>
+</body>
+</html>
