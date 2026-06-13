@@ -4,6 +4,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { MinimalWebSocketServer } from './ws.ts';
 import { handleConnection, handleHttpAction, handleHttpPoll } from './room.ts';
+import { log } from './logger.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -121,7 +122,8 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const filePath = path.join(CLIENT_DIR, req.url === '/' ? 'index.html' : req.url);
+  const urlPath = (req.url || '/').split('?')[0];
+  const filePath = path.join(CLIENT_DIR, urlPath === '/' ? 'index.html' : urlPath);
   const ext = path.extname(filePath);
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404); res.end('Not Found'); return; }
@@ -134,5 +136,5 @@ const wss = new MinimalWebSocketServer(server);
 wss.on('connection', handleConnection);
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`三国杀 server running at http://0.0.0.0:${PORT}`);
+  log.info(`三国杀 server running at http://0.0.0.0:${PORT}`);
 });

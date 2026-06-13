@@ -1,8 +1,6 @@
 import { Game } from './engine.ts';
 import { HEROES } from './heroes.ts';
-
-const VERBOSE = process.env.VERBOSE === '1';
-function debug(...args) { if (VERBOSE) console.log('[DEBUG]', ...args); }
+import { log } from './logger.ts';
 
 const rooms = new Map();
 const playerToRoom = new Map();
@@ -75,7 +73,7 @@ export function handleConnection(ws) {
 }
 
 function handleMessage(ws, playerId, msg) {
-  debug(`<- ${playerId} ${msg.type}`, msg.type === 'play_card' ? `card:${msg.cardUid} target:${msg.targetId}` : msg.type === 'respond' ? `card:${msg.cardUid}` : '');
+  log.debug(`<- ${playerId} ${msg.type}`, msg.type === 'play_card' ? `card:${msg.cardUid} target:${msg.targetId}` : msg.type === 'respond' ? `card:${msg.cardUid}` : '');
   switch (msg.type) {
     case 'create_room': {
       const pin = generatePin();
@@ -125,10 +123,10 @@ function handleMessage(ws, playerId, msg) {
 function broadcastState(room) {
   if (!room.game) return;
   const logs = room.game.popLogs();
-  for (const l of logs) debug('  LOG:', l);
+  for (const l of logs) log.debug('  LOG:', l);
   const s = room.game.state;
-  debug(`  state: turn=${s.turnNumber} phase=${s.phase} current=${s.players[s.currentPlayerIdx]?.name} waiting=${s.waitingFor?.type||'none'}(${s.waitingFor?.playerId||''})`);
-  debug(`  HP: ${s.players.map(p => p.name + ':' + p.hp).join(' | ')}`);
+  log.debug(`  state: turn=${s.turnNumber} phase=${s.phase} current=${s.players[s.currentPlayerIdx]?.name} waiting=${s.waitingFor?.type||'none'}(${s.waitingFor?.playerId||''})`);
+  log.debug(`  HP: ${s.players.map(p => p.name + ':' + p.hp).join(' | ')}`);
   for (const p of room.players) {
     send(p.ws, { type: 'game_update', state: buildPublicState(room.game, p.id) });
     for (const l of logs) send(p.ws, { type: 'log', msg: l });

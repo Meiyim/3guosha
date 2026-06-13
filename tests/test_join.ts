@@ -105,6 +105,30 @@ async function main() {
     test('Stale/invalid token returns error', stalePoll.error === 'invalid token',
       JSON.stringify(stalePoll));
 
+    // Test 10: Player A creates room, Player B joins with names preserved
+    const pA = await action({ type: 'connect' });
+    const pB = await action({ type: 'connect' });
+    await action({ token: pA.token, type: 'create_room', name: 'Player A' });
+    await sleep(50);
+    const pAPoll = await poll(pA.token);
+    const pinAB = pAPoll.messages.find(m => m.type === 'room_created')?.pin;
+    test('Player A creates room', !!pinAB, `pin=${pinAB}`);
+
+    await action({ token: pB.token, type: 'join_room', pin: pinAB, name: 'Player B' });
+    await sleep(100);
+    const pBPoll = await poll(pB.token);
+    const joinedMsg = pBPoll.messages.find(m => m.type === 'room_joined');
+    const names = joinedMsg?.players?.map(p => p.name) || [];
+    test('Player B joins, both names visible', names.includes('Player A') && names.includes('Player B'),
+      `players: ${JSON.stringify(names)}`);
+
+    // Verify Player A also sees Player B
+    const pAPoll2 = await poll(pA.token);
+    const joinedA = pAPoll2.messages.find(m => m.type === 'room_joined');
+    const namesA = joinedA?.players?.map(p => p.name) || [];
+    test('Player A sees Player B joined', namesA.includes('Player B'),
+      `players: ${JSON.stringify(namesA)}`);
+
     console.log(`\n=== Results: ${passed} passed, ${failed} failed ===\n`);
     process.exitCode = failed > 0 ? 1 : 0;
 

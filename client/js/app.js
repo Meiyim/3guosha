@@ -60,11 +60,11 @@
 
   // Lobby
   $('btn-create').onclick = () => {
-    const name = $('player-name').value.trim() || '玩家';
+    const name = $('create-name').value.trim() || '玩家';
     send({ type: 'create_room', name });
   };
   $('btn-join').onclick = () => {
-    const name = $('player-name').value.trim() || '玩家';
+    const name = $('join-name').value.trim() || '玩家';
     const pin = $('pin-input').value.trim();
     if (pin.length !== 4) { $('lobby-status').textContent = '请输入4位PIN'; return; }
     send({ type: 'join_room', pin, name });
