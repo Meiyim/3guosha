@@ -107,6 +107,17 @@ export class Game implements GameContext {
   getPlayer(id: string): PlayerState | undefined { return this.state.players.find(p => p.id === id); }
   getOpponent(player: PlayerState): PlayerState | undefined { return this.state.players.find(p => p.id !== player.id && p.alive); }
 
+  getPlayableUids(player: PlayerState): number[] {
+    if (this.state.phase !== 'play' || this.currentPlayer.id !== player.id) return [];
+    if (this.waitingFor) return [];
+    return player.hand.filter(c => {
+      const handler = getCardHandler(c.def.id);
+      if (!handler) return false;
+      if (handler.canPlay && !handler.canPlay(this, player, c)) return false;
+      return true;
+    }).map(c => c.uid);
+  }
+
   // Resolution stack — backward-compatible waitingFor getter
   get waitingFor(): WaitingAction | null {
     const top = this.state.resolutionStack[this.state.resolutionStack.length - 1];
@@ -177,7 +188,7 @@ export class Game implements GameContext {
     this.state.phase = 'play';
   }
 
-  playCard(playerId: string, cardUid: number, targetId?: string): WaitingAction | null {
+  playCard(playerId: string, cardUid: number, targetId?: string): WaitingAction | string | null {
     const player = this.getPlayer(playerId);
     if (!player || this.state.phase !== 'play' || this.currentPlayer.id !== playerId) return null;
     const cardIdx = player.hand.findIndex(c => c.uid === cardUid);
@@ -194,9 +205,11 @@ export class Game implements GameContext {
     }
 
     const handler = getCardHandler(card.def.id);
-    if (!handler) return null;
-    if (handler.canPlay && !handler.canPlay(this, player, card)) return null;
-    return handler.onPlay(this, player, card, cardIdx, targetId);
+    if (!handler) return '未知卡牌';
+    if (handler.canPlay && !handler.canPlay(this, player, card)) return '该牌当前不可使用';
+    const result = handler.onPlay(this, player, card, cardIdx, targetId);
+    if (result === null) return '该牌当前无法打出';
+    return result;
   }
 
   respond(playerId: string, cardUid: number | null): WaitingAction | null {

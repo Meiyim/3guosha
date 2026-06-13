@@ -11,6 +11,8 @@ function createGameClient() {
   const state = {
     screen: 'lobby',
     myId: null,
+    myHand: [],
+    playableUids: [],
     pin: null,
     heroes: null,
     gameState: null,
@@ -37,11 +39,16 @@ function createGameClient() {
         break;
       case 'game_update':
         state.gameState = msg.state;
+        state.screen = 'game';
+        break;
+      case 'private_update':
         state.myId = msg.state.myId;
+        state.myHand = msg.state.myHand;
+        state.playableUids = msg.state.playableUids || [];
         state.selectedCards = state.selectedCards.filter(
           uid => msg.state.myHand.some(c => c.uid === uid)
         );
-        state.screen = 'game';
+        if (state.gameState) state.screen = 'game';
         break;
       case 'log':
         state.logs.push(msg.msg);
@@ -71,9 +78,9 @@ function createGameClient() {
     if (!gs) return [];
     const actions = [];
     const waiting = gs.waitingFor;
-    const isMyTurn = gs.players[gs.currentPlayerIdx].id === gs.myId;
+    const isMyTurn = gs.players[gs.currentPlayerIdx].id === state.myId;
 
-    if (waiting && waiting.playerId === gs.myId) {
+    if (waiting && waiting.playerId === state.myId) {
       if (waiting.type === 'discard') {
         actions.push({ id: 'discard', label: '弃牌 (需弃' + waiting.data.count + '张)' });
       } else {
@@ -82,7 +89,7 @@ function createGameClient() {
       }
     } else if (isMyTurn && gs.phase === 'play') {
       actions.push({ id: 'play', label: '出牌' });
-      const me = gs.players.find(p => p.id === gs.myId);
+      const me = gs.players.find(p => p.id === state.myId);
       if (me && me.heroId === 'sunquan' && state.selectedCards.length > 0) {
         actions.push({ id: 'zhiheng', label: '制衡' });
       }
@@ -94,7 +101,7 @@ function createGameClient() {
   function buildCommand(actionId) {
     const gs = state.gameState;
     if (!gs) return null;
-    const opp = gs.players.find(p => p.id !== gs.myId);
+    const opp = gs.players.find(p => p.id !== state.myId);
     switch (actionId) {
       case 'play':
         if (state.selectedCards.length === 1)

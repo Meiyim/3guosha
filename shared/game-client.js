@@ -12,6 +12,7 @@ function createGameClient() {
     screen: 'lobby',
     myId: null,
     myHand: [],
+    playableUids: [],
     pin: null,
     heroes: null,
     gameState: null,
@@ -43,9 +44,11 @@ function createGameClient() {
       case 'private_update':
         state.myId = msg.state.myId;
         state.myHand = msg.state.myHand;
+        state.playableUids = msg.state.playableUids || [];
         state.selectedCards = state.selectedCards.filter(
           uid => msg.state.myHand.some(c => c.uid === uid)
         );
+        if (state.gameState) state.screen = 'game';
         break;
       case 'log':
         state.logs.push(msg.msg);

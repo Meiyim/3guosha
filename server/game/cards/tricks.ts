@@ -1,7 +1,8 @@
-import { WaitingType, type GameContext, type PlayerState, type CardInstance, type WaitingAction, type CardHandler } from '../types.ts';
+import { WaitingType, TargetType, type GameContext, type PlayerState, type CardInstance, type WaitingAction, type CardHandler } from '../types.ts';
 import { registerCard } from './index.ts';
 
 const juedouHandler: CardHandler = {
+  targetType: TargetType.SINGLE,
   onPlay(ctx, player, card, cardIdx, targetId) {
     const target = targetId ? ctx.getPlayer(targetId) : ctx.getOpponent(player);
     if (!target || !target.alive || target.id === player.id) return null;
@@ -13,6 +14,7 @@ const juedouHandler: CardHandler = {
 };
 
 const nanmanHandler: CardHandler = {
+  targetType: TargetType.ALL_OTHERS,
   onPlay(ctx, player, card, cardIdx) {
     ctx.useCard(player, cardIdx);
     ctx.log(`${player.name} 使用了南蛮入侵`);
@@ -24,6 +26,7 @@ const nanmanHandler: CardHandler = {
 };
 
 const wanjianHandler: CardHandler = {
+  targetType: TargetType.ALL_OTHERS,
   onPlay(ctx, player, card, cardIdx) {
     ctx.useCard(player, cardIdx);
     ctx.log(`${player.name} 使用了万箭齐发`);
@@ -35,6 +38,7 @@ const wanjianHandler: CardHandler = {
 };
 
 const wuzhongHandler: CardHandler = {
+  targetType: TargetType.SELF,
   onPlay(ctx, player, card, cardIdx) {
     ctx.useCard(player, cardIdx);
     ctx.drawCards(player, 2);

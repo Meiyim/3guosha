@@ -7,6 +7,7 @@ export interface ServerConfig {
     host: string;
     verbose: boolean;
     log_dir: string;
+    open_join: boolean;
   };
   game: {
     mode: 'dual' | 'identity' | '2v2' | '3v3';
@@ -17,7 +18,7 @@ export interface ServerConfig {
 }
 
 const DEFAULTS: ServerConfig = {
-  server: { port: 3000, host: '0.0.0.0', verbose: false, log_dir: '' },
+  server: { port: 3000, host: '0.0.0.0', verbose: false, log_dir: '', open_join: false },
   game: { mode: 'dual', turn_timeout: 60, reconnect_timeout: 30, max_rounds: 50 },
 };
 

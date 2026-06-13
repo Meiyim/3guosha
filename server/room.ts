@@ -3,6 +3,9 @@ import { log } from './logger.ts';
 
 // Single room — created on server start, resets after game ends
 let room: { pin: string; players: any[]; game: Game | null; state: string };
+let openJoin = false;
+
+export function setOpenJoin(enabled: boolean) { openJoin = enabled; }
 let playerIdCounter = 1;
 
 function generatePin(): string {
@@ -36,7 +39,8 @@ function handleMessage(ws: any, playerId: string, msg: any) {
   log.debug(`<- ${playerId} ${msg.type}`, msg.type === 'play_card' ? `card:${msg.cardUid} target:${msg.targetId}` : msg.type === 'respond' ? `card:${msg.cardUid}` : '');
   switch (msg.type) {
     case 'join_room': {
-      if (room.pin !== msg.pin || room.state !== 'waiting') { send(ws, { type: 'error', msg: '房间不存在或已开始' }); return; }
+      if (!openJoin && room.pin !== msg.pin) { send(ws, { type: 'error', msg: '房间不存在或已开始' }); return; }
+      if (room.state !== 'waiting') { send(ws, { type: 'error', msg: '房间不存在或已开始' }); return; }
       if (room.players.length >= 2) { send(ws, { type: 'error', msg: '房间已满' }); return; }
       room.players.push({ id: playerId, name: msg.name || 'Player', ws });
       log.info(`${msg.name||'Player'}(${playerId}) joined room PIN=${room.pin}`);
@@ -61,7 +65,17 @@ function handleMessage(ws: any, playerId: string, msg: any) {
       }
       break;
     }
-    case 'play_card': { if (room.game) { room.game.playCard(playerId, msg.cardUid, msg.targetId); broadcastState(); } break; }
+    case 'play_card': {
+      if (room.game) {
+        const result = room.game.playCard(playerId, msg.cardUid, msg.targetId);
+        if (typeof result === 'string') {
+          const p = room.players.find(pl => pl.id === playerId);
+          if (p) send(p.ws, { type: 'log', msg: result });
+        }
+        broadcastState();
+      }
+      break;
+    }
     case 'respond': { if (room.game) { room.game.respond(playerId, msg.cardUid); broadcastState(); } break; }
     case 'end_play': { if (room.game) { room.game.endPlay(playerId); broadcastState(); } break; }
     case 'discard_cards': { if (room.game) { room.game.discardCards(playerId, msg.cardUids); broadcastState(); } break; }
@@ -109,7 +123,7 @@ function buildPublicState(game: Game) {
 
 function buildPrivateState(game: Game, forPlayerId: string) {
   const me = game.state.players.find(p => p.id === forPlayerId)!;
-  return { myId: forPlayerId, myHand: me.hand };
+  return { myId: forPlayerId, myHand: me.hand, playableUids: game.getPlayableUids(me) };
 }
 
 function send(ws: any, msg: any) { if (ws.readyState === 1) ws.send(JSON.stringify(msg)); }

@@ -5,6 +5,7 @@ server:
   host: "0.0.0.0"
   verbose: true
   log_dir: "./logs"
+  open_join: true         # true = clients can join without PIN
 
 game:
   mode: "dual"           # dual | identity(身份局) | 2v2 | 3v3 (only dual supported now)

@@ -151,8 +151,8 @@ test('only 1 sha per turn without zhuge', () => {
   game.playCard(p.id, 9010);
   game.respond(opp.id, null);
   // second sha should fail
-  const waiting = game.playCard(p.id, 9011);
-  assert.strictEqual(waiting, null);
+  const result = game.playCard(p.id, 9011);
+  assert.strictEqual(typeof result, 'string');
 });
 
 console.log('\n=== Peach Tests ===');

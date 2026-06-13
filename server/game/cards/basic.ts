@@ -1,7 +1,12 @@
-import { WaitingType, type GameContext, type PlayerState, type CardInstance, type WaitingAction, type CardHandler } from '../types.ts';
+import { WaitingType, TargetType, type GameContext, type PlayerState, type CardInstance, type WaitingAction, type CardHandler } from '../types.ts';
 import { registerCard } from './index.ts';
 
 const shaHandler: CardHandler = {
+  targetType: TargetType.SINGLE,
+  canPlay(ctx, player) {
+    const maxAttacks = player.equipment.weapon?.def.id === 'zhuge' ? 999 : 1;
+    return player.attackCount < maxAttacks;
+  },
   onPlay(ctx, player, card, cardIdx, targetId) {
     const maxAttacks = player.equipment.weapon?.def.id === 'zhuge' ? 999 : 1;
     if (player.attackCount >= maxAttacks) return null;
@@ -16,11 +21,14 @@ const shaHandler: CardHandler = {
 };
 
 const shanHandler: CardHandler = {
+  targetType: TargetType.SELF,
   canPlay() { return false; },
   onPlay() { return null; }
 };
 
 const taoHandler: CardHandler = {
+  targetType: TargetType.SELF,
+  canPlay(ctx, player) { return player.hp < player.maxHp; },
   onPlay(ctx, player, card, cardIdx) {
     if (player.hp >= player.maxHp) return null;
     ctx.useCard(player, cardIdx);

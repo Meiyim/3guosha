@@ -73,11 +73,13 @@ function connectWs(): Promise<void> {
 function renderInteractive(state: any, msg: any) {
   if (INTERACTIVE) {
     if (msg && msg.type === 'log') { console.log('  📜 ' + msg.msg); return; }
+    if (state.error) { console.error(`\n❌ 错误: ${state.error}`); process.exit(1); }
     if (state.screen === 'waiting') {
       console.log('\n等待对手加入... PIN: ' + state.pin);
       return;
     }
     if (state.screen === 'hero_select') {
+      if (!state.heroes) { console.log('\n>> 其他玩家正在选择武将'); return; }
       console.log('\n选择武将:');
       state.heroes.forEach((h: any, i: number) => {
         console.log(`  [${i + 1}] ${h.nameCn} (${kingdomName(h.kingdom)}) HP:${h.maxHp}`);
@@ -92,20 +94,42 @@ function renderInteractive(state: any, msg: any) {
     }
     if (state.screen === 'game') {
       const gs = state.gameState;
+      if (!gs) return;
       const me = client.getMyPlayer();
       const opp = client.getOpponent();
+      if (!me || !opp) return;
       console.log('\n' + '─'.repeat(50));
       console.log(`对手: ${opp.name}(${opp.heroId}) HP:${hpText(opp.hp, opp.maxHp)} 手牌:${opp.handCount} ${formatEquip(opp.equipment)}`);
       console.log(`第${gs.turnNumber}回合 | ${phaseName(gs.phase)} | 牌堆:${gs.deckCount}`);
       console.log(`你: ${me.name}(${me.heroId}) HP:${hpText(me.hp, me.maxHp)}`);
-      console.log('手牌:');
-      state.myHand.forEach((c: any, i: number) => {
-        const sel = state.selectedCards.includes(c.uid) ? ' ✓' : '';
-        console.log(`  [${i + 1}] ${formatCard(c)}${sel}`);
-      });
+      const hand = state.myHand || [];
+      if (hand.length > 0) {
+        console.log('手牌:');
+        hand.forEach((c: any, i: number) => {
+          const sel = state.selectedCards.includes(c.uid) ? ' ✓' : '';
+          console.log(`  [${i + 1}] ${formatCard(c)}${sel}`);
+        });
+      }
+      // Status hint
+      const waiting = gs.waitingFor;
+      const isMyTurn = client.isMyTurn();
+      if (waiting && waiting.playerId === state.myId) {
+        const types: Record<string, string> = { respond_attack: '响应杀', respond_duel: '响应决斗', respond_barbarian: '响应南蛮/万箭', discard: '弃牌' };
+        console.log(`\n>> 等待你${types[waiting.type] || '响应'}`);
+      } else if (waiting) {
+        const who = gs.players.find((p: any) => p.id === waiting.playerId);
+        const types: Record<string, string> = { respond_attack: '响应杀', respond_duel: '响应决斗', respond_barbarian: '响应南蛮/万箭', discard: '弃牌' };
+        console.log(`\n>> 等待 ${who?.name || waiting.playerId} ${types[waiting.type] || '响应'}`);
+      } else if (isMyTurn && gs.phase === 'play') {
+        console.log('\n>> 等待你出牌');
+      } else {
+        console.log('\n>> 等待对手出牌');
+      }
+
       const actions = client.getAvailableActions();
       if (actions.length > 0) {
         console.log('操作: ' + actions.map((a: any) => `(${a.id[0]})${a.label}`).join('  '));
+        console.log('提示: 输入数字选牌, p=出牌, e=结束, r=响应, d=弃牌, 直接回车=放弃');
         rl.setPrompt('> ');
         rl.prompt();
       }
@@ -122,7 +146,16 @@ const rl = readline.createInterface({ input: process.stdin, output: process.stdo
 
 rl.on('line', (line: string) => {
   const input = line.trim();
-  if (!input) return;
+  if (!input) {
+    if (INTERACTIVE && client.state.screen === 'game') {
+      const gs = client.state.gameState;
+      const waiting = gs?.waitingFor;
+      if (waiting && waiting.playerId === client.state.myId && waiting.type !== 'discard') {
+        sendFn({ type: 'respond', cardUid: null });
+      }
+    }
+    return;
+  }
 
   if (!INTERACTIVE) {
     // JSON pipe mode: parse and send directly
@@ -149,9 +182,9 @@ rl.on('line', (line: string) => {
     // Select card by number
     if (/^\d+$/.test(input)) {
       const idx = parseInt(input) - 1;
-      const gs = state.gameState;
-      if (gs && idx >= 0 && idx < state.myHand.length) {
-        client.toggleCard(state.myHand[idx].uid);
+      const hand = state.myHand || [];
+      if (idx >= 0 && idx < hand.length) {
+        client.toggleCard(hand[idx].uid);
       }
       return;
     }

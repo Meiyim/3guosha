@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { MinimalWebSocketServer } from './ws.ts';
-import { handleConnection, initRoom } from './room.ts';
+import { handleConnection, initRoom, setOpenJoin } from './room.ts';
 import { log } from './logger.ts';
 import { loadConfig } from './config.ts';
 
@@ -14,6 +14,7 @@ const config = loadConfig(configFile);
 const PORT = Number(process.env.PORT) || config.server.port;
 if (config.server.verbose) process.env.VERBOSE = '1';
 if (config.server.log_dir) process.env.LOG_DIR = config.server.log_dir;
+if (config.server.open_join) setOpenJoin(true);
 
 const CLIENT_DIR = path.join(__dirname, '../client');
 const SHARED_DIR = path.join(__dirname, '../shared');

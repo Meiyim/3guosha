@@ -110,6 +110,7 @@ export interface PublicGameState {
 export interface PrivateGameState {
   myId: string;
   myHand: CardInstance[];
+  playableUids: number[];
 }
 
 export enum ServerMsgType {
@@ -157,7 +158,14 @@ export interface GameContext {
   hasSkill(player: PlayerState, skillId: string): boolean;
 }
 
+export enum TargetType {
+  SINGLE = 'single',       // pick one player (杀, 决斗)
+  ALL_OTHERS = 'all',      // all other players, no selection (南蛮, 万箭)
+  SELF = 'self',           // self or no target (桃, 无中生有, equipment)
+}
+
 export interface CardHandler {
+  targetType: TargetType;
   canPlay?(ctx: GameContext, player: PlayerState, card: CardInstance): boolean;
   onPlay(ctx: GameContext, player: PlayerState, card: CardInstance, cardIdx: number, targetId?: string): WaitingAction | null;
 }
@@ -165,6 +173,7 @@ export interface CardHandler {
 export interface SkillHandler {
   id: string;
   events: GameEvent[];
+  targetType?: TargetType;
   trigger(ctx: GameContext, event: GameEvent, player: PlayerState, data?: any): void;
   activeAction?(ctx: GameContext, player: PlayerState, cardUids: number[]): void;
 }
