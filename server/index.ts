@@ -3,12 +3,20 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { MinimalWebSocketServer } from './ws.ts';
-import { handleConnection, handleHttpAction, handleHttpPoll } from './room.ts';
+import { handleConnection, initRoom } from './room.ts';
 import { log } from './logger.ts';
+import { loadConfig } from './config.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.PORT) || 3000;
+const configFile = process.argv.find(a => a.endsWith('.yaml') || a.endsWith('.yml')) || process.env.CONFIG;
+const config = loadConfig(configFile);
+
+const PORT = Number(process.env.PORT) || config.server.port;
+if (config.server.verbose) process.env.VERBOSE = '1';
+if (config.server.log_dir) process.env.LOG_DIR = config.server.log_dir;
+
 const CLIENT_DIR = path.join(__dirname, '../client');
+const SHARED_DIR = path.join(__dirname, '../shared');
 
 const MIME = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
@@ -88,44 +96,16 @@ a{color:#4fc3f7;}</style></head><body>
 </body></html>`;
 
 const server = http.createServer((req, res) => {
-  // HTTP polling API
-  if (req.url === '/api/action' && req.method === 'POST') {
-    let body = '';
-    req.on('data', c => body += c);
-    req.on('end', () => {
-      try {
-        const result = handleHttpAction(JSON.parse(body));
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify(result));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
-      }
-    });
-    return;
-  }
-  if (req.url?.startsWith('/api/poll') && req.method === 'GET') {
-    const token = new URL(req.url, 'http://x').searchParams.get('token');
-    const result = handleHttpPoll(token);
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-    res.end(JSON.stringify(result));
-    return;
-  }
   if (req.url === '/api/manual' && req.method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(MANUAL_HTML);
-    return;
-  }
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST', 'Access-Control-Allow-Headers': 'Content-Type' });
-    res.end();
     return;
   }
 
   const urlPath = (req.url || '/').split('?')[0];
-  const filePath = path.join(CLIENT_DIR, urlPath === '/' ? 'index.html' : urlPath);
-  const ext = path.extname(filePath);
-  fs.readFile(filePath, (err, data) => {
+  const baseDir = urlPath.startsWith('/shared/') ? path.join(SHARED_DIR, urlPath.slice(8)) : path.join(CLIENT_DIR, urlPath === '/' ? 'index.html' : urlPath);
+  const ext = path.extname(baseDir);
+  fs.readFile(baseDir, (err, data) => {
     if (err) { res.writeHead(404); res.end('Not Found'); return; }
     res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
     res.end(data);
@@ -135,6 +115,7 @@ const server = http.createServer((req, res) => {
 const wss = new MinimalWebSocketServer(server);
 wss.on('connection', handleConnection);
 
-server.listen(PORT, '0.0.0.0', () => {
-  log.info(`三国杀 server running at http://0.0.0.0:${PORT}`);
+server.listen(PORT, config.server.host, () => {
+  const pin = initRoom();
+  log.info(`三国杀 server running at http://${config.server.host}:${PORT} [mode=${config.game.mode}] PIN=${pin}`);
 });

@@ -1,6 +1,11 @@
-import type { CardDef, CardInstance, CardSuit } from './types.ts';
+import type { CardDef, CardInstance, CardSuit, EquipSlot, CardHandler } from '../types.ts';
 
-function spread(id: string, suit: CardSuit, numbers: number[]) {
+const cardRegistry = new Map<string, CardHandler>();
+export function registerCard(id: string, handler: CardHandler) { cardRegistry.set(id, handler); }
+export function getCardHandler(id: string): CardHandler | undefined { return cardRegistry.get(id); }
+
+type DeckEntry = { id: string; suit: CardSuit; number: number };
+function spread(id: string, suit: CardSuit, numbers: number[]): DeckEntry[] {
   return numbers.map(n => ({ id, suit, number: n }));
 }
 
@@ -16,12 +21,12 @@ const trickCards: Omit<CardDef, 'suit' | 'number'>[] = [
   { id: 'wuzhong', name: 'Bountiful Harvest', nameCn: '无中生有', type: 'trick' },
 ];
 const equipCards: Omit<CardDef, 'suit' | 'number'>[] = [
-  { id: 'zhuge', name: 'Zhuge Crossbow', nameCn: '诸葛连弩', type: 'equipment', equipSlot: 'weapon' },
-  { id: 'plus_horse', name: '+1 Horse', nameCn: '+1马', type: 'equipment', equipSlot: 'horse_plus' },
-  { id: 'minus_horse', name: '-1 Horse', nameCn: '-1马', type: 'equipment', equipSlot: 'horse_minus' },
+  { id: 'zhuge', name: 'Zhuge Crossbow', nameCn: '诸葛连弩', type: 'equipment', equipSlot: 'weapon' as EquipSlot },
+  { id: 'plus_horse', name: '+1 Horse', nameCn: '+1马', type: 'equipment', equipSlot: 'horse_plus' as EquipSlot },
+  { id: 'minus_horse', name: '-1 Horse', nameCn: '-1马', type: 'equipment', equipSlot: 'horse_minus' as EquipSlot },
 ];
 
-const deckList = [
+const deckList: DeckEntry[] = [
   ...spread('sha', 'spade', [1,2,3,4,5,6,7,8,9,10]),
   ...spread('sha', 'club', [2,3,4,5,6,7,8]),
   ...spread('sha', 'heart', [10,11,12]),

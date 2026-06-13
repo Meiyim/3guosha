@@ -1,0 +1,13 @@
+# 三国杀 Server Configuration
+
+server:
+  port: 8331
+  host: "0.0.0.0"
+  verbose: true
+  log_dir: "./logs"
+
+game:
+  mode: "dual"           # dual | identity(身份局) | 2v2 | 3v3 (only dual supported now)
+  turn_timeout: 60       # seconds per turn before auto-pass (0 = no limit)
+  reconnect_timeout: 30  # seconds to wait for disconnected player to reconnect
+  max_rounds: 50         # max rounds before draw (0 = no limit)

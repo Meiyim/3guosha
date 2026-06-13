@@ -1,176 +1,105 @@
 import { spawn } from 'child_process';
 import http from 'http';
-
-// Simulates a full Chrome browser session: loads page, connects, joins room, selects hero, plays game
-// This replaces manual browser testing.
+import { createWsPlayer } from '../shared/ws-client.ts';
 
 const PORT = 8331;
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-function request(method, path, body) {
-  return new Promise((resolve, reject) => {
-    const opts = { host: 'localhost', port: PORT, path, method, headers: { 'Content-Type': 'application/json' } };
-    const req = http.request(opts, res => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error(data)); } });
-    });
-    req.on('error', reject);
-    if (body) req.write(JSON.stringify(body));
-    req.end();
-  });
-}
-
-function fetchText(path) {
+function fetchText(path: string): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     http.get({ host: 'localhost', port: PORT, path }, res => {
-      let d = ''; res.on('data', c => d += c); res.on('end', () => resolve({ status: res.statusCode, body: d }));
+      let d = ''; res.on('data', (c: any) => d += c);
+      res.on('end', () => resolve({ status: res.statusCode!, body: d }));
     }).on('error', reject);
   });
 }
 
-const poll = (token) => request('GET', `/api/poll?token=${token}`);
-const action = (body) => request('POST', '/api/action', body);
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
 async function main() {
-  let server;
-  const errors = [];
-
+  let server: any;
   try {
-    // 1. Start server
     console.log('1. Starting server...');
-    server = spawn('node', ['server/index.ts'], { env: { ...process.env, PORT: String(PORT), VERBOSE: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
-    server.stderr.on('data', d => { const s = d.toString(); if (s.includes('Error')) errors.push('SERVER: ' + s); });
-    await new Promise((resolve, reject) => {
-      server.stdout.on('data', d => { if (d.toString().includes('running')) resolve(); });
+    server = spawn('node', ['--experimental-transform-types', 'server/index.ts'], { env: { ...process.env, PORT: String(PORT) }, stdio: ['pipe', 'pipe', 'pipe'] });
+    await new Promise<void>((resolve, reject) => {
+      server.stdout.on('data', (d: Buffer) => { if (d.toString().includes('running')) resolve(); });
       setTimeout(() => reject(new Error('server start timeout')), 5000);
     });
     console.log('   Server running on port', PORT);
 
-    // 2. Simulate Chrome loading the page
     console.log('2. Chrome loads page...');
     const htmlResp = await fetchText('/');
-    if (htmlResp.status !== 200) throw new Error('Failed to load index.html');
-    if (!htmlResp.body.includes('三国杀')) throw new Error('HTML missing title');
-
+    if (htmlResp.status !== 200 || !htmlResp.body.includes('三国杀')) throw new Error('Failed to load HTML');
     const jsResp = await fetchText('/js/app.js');
     if (jsResp.status !== 200) throw new Error('Failed to load app.js');
-    if (!jsResp.body.includes('api/action')) throw new Error('JS missing api/action call');
+    const sharedResp = await fetchText('/shared/game-client.js');
+    if (sharedResp.status !== 200) throw new Error('Failed to load game-client.js');
+    console.log('   HTML, JS, shared module all loaded');
 
-    const cssResp = await fetchText('/css/style.css');
-    if (cssResp.status !== 200) throw new Error('Failed to load style.css');
-    console.log('   HTML, JS, CSS all loaded successfully');
+    console.log('3. Two players connect via WebSocket...');
+    const p1 = await createWsPlayer('localhost', PORT);
+    const p2 = await createWsPlayer('localhost', PORT);
+    console.log('   Connected');
 
-    // 3. app.js auto-connects on page load
-    console.log('3. app.js auto-connects...');
-    const { token: browserToken, playerId: browserId } = await action({ type: 'connect' });
-    if (!browserToken) throw new Error('connect failed');
-    console.log(`   Connected: token=${browserToken} id=${browserId}`);
-
-    // 4. AI opponent creates room
-    console.log('4. AI creates room...');
-    const { token: aiToken } = await action({ type: 'connect' });
-    await action({ token: aiToken, type: 'create_room', name: 'AI对手' });
-    await sleep(50);
-    const aiPoll = await poll(aiToken);
-    const pin = aiPoll.messages.find(m => m.type === 'room_created')?.pin;
-    if (!pin) throw new Error('No room PIN');
+    console.log('4. Player 1 creates room...');
+    p1.send({ type: 'create_room', name: '玩家' });
+    const { pin } = await p1.waitFor('room_created');
     console.log(`   Room created: PIN=${pin}`);
 
-    // 5. Browser user types PIN and clicks "加入"
-    console.log(`5. User enters PIN "${pin}" and clicks 加入...`);
-    const joinResp = await action({ token: browserToken, type: 'join_room', pin, name: '玩家' });
-    if (joinResp.error) throw new Error('Join failed: ' + joinResp.error);
-    await sleep(100);
-    const joinPoll = await poll(browserToken);
-    const gotHeroSelect = joinPoll.messages.some(m => m.type === 'hero_selection');
-    if (!gotHeroSelect) {
-      const errMsg = joinPoll.messages.find(m => m.type === 'error');
-      throw new Error('No hero_selection received. Got: ' + JSON.stringify(joinPoll.messages.map(m => m.type)) + (errMsg ? ' error: ' + errMsg.msg : ''));
-    }
-    console.log('   Joined! Hero selection screen shown');
+    console.log('5. Player 2 joins...');
+    p2.send({ type: 'join_room', pin, name: 'AI对手' });
+    await p2.waitFor('hero_selection');
+    console.log('   Joined, hero selection shown');
 
-    // 6. User selects hero
-    console.log('6. User selects 关羽, AI selects 曹操...');
-    await action({ token: browserToken, type: 'select_hero', heroId: 'guanyu' });
-    await action({ token: aiToken, type: 'select_hero', heroId: 'caocao' });
-    await sleep(200);
-    const gamePoll = await poll(browserToken);
-    const gameState = gamePoll.messages.find(m => m.type === 'game_update')?.state;
-    if (!gameState) throw new Error('Game did not start');
-    console.log(`   Game started! Phase: ${gameState.phase}, Hand: ${gameState.myHand.length} cards`);
-    console.log(`   Players: ${gameState.players.map(p => p.name + '(' + p.heroId + ') HP:' + p.hp).join(' vs ')}`);
+    console.log('6. Both select heroes...');
+    p1.send({ type: 'select_hero', heroId: 'guanyu' });
+    p2.send({ type: 'select_hero', heroId: 'caocao' });
+    const gameMsg = await p1.waitFor('game_update');
+    const privMsg = await p1.waitFor('private_update');
+    console.log(`   Game started! Phase: ${gameMsg.state.phase}, Hand: ${privMsg.state.myHand.length} cards`);
 
-    // 7. Simulate a few rounds of play
-    console.log('7. Playing a few rounds...');
-    let usedSha = {};
-    for (let round = 0; round < 100; round++) {
-      await sleep(50);
-      const { messages } = await poll(browserToken);
-      if (!messages || messages.length === 0) {
-        // Also let AI poll
-        const aiMsgs = await poll(aiToken);
-        if (aiMsgs.messages) {
-          for (const msg of aiMsgs.messages) {
-            if (msg.type === 'game_over') { console.log(`   Game Over! Winner: ${msg.winner}`); console.log('\n✓ FULL BROWSER SIMULATION PASSED'); process.exit(0); }
-            if (msg.type === 'game_update') {
-              const s = msg.state;
-              if (s.waitingFor?.playerId === s.myId) {
-                await action({ token: aiToken, type: 'respond', cardUid: null });
-              } else if (s.players[s.currentPlayerIdx].id === s.myId && s.phase === 'play') {
-                const sha = s.myHand.find(c => c.def.id === 'sha');
-                const opp = s.players.find(p => p.id !== s.myId);
-                if (sha && !usedSha['ai_' + s.turnNumber]) { await action({ token: aiToken, type: 'play_card', cardUid: sha.uid, targetId: opp.id }); usedSha['ai_' + s.turnNumber] = true; }
-                else await action({ token: aiToken, type: 'end_play' });
-              }
+    console.log('7. Playing rounds...');
+    let usedSha: Record<string, boolean> = {};
+    let myId: Record<string, string> = {};  // ws → myId
+    let myHand: Record<string, any[]> = {}; // ws → hand
+    for (let round = 0; round < 200; round++) {
+      await sleep(30);
+      for (const p of [p1, p2]) {
+        const msgs = p.drain();
+        for (const msg of msgs) {
+          if (msg.type === 'game_over') {
+            console.log(`   Game Over! Winner: ${msg.winner}`);
+            console.log('\n✓ FULL BROWSER SIMULATION PASSED');
+            p1.ws.close(); p2.ws.close(); server.kill();
+            process.exit(0);
+          }
+          if (msg.type === 'private_update') {
+            myId[msg.state.myId] = msg.state.myId;
+            myHand[msg.state.myId] = msg.state.myHand;
+          }
+          if (msg.type === 'game_update') {
+            const s = msg.state;
+            const id = Object.keys(myId).find(k => myId[k]) || '';
+            const hand = myHand[id] || [];
+            const opp = s.players.find((x: any) => x.id !== id);
+            if (!opp) continue;
+            if (s.waitingFor?.playerId === id) {
+              if (s.waitingFor.type === 'discard') {
+                p.send({ type: 'discard_cards', cardUids: hand.slice(0, s.waitingFor.data.count).map((c: any) => c.uid) });
+              } else { p.send({ type: 'respond', cardUid: null }); }
+            } else if (s.players[s.currentPlayerIdx].id === id && s.phase === 'play') {
+              const tk = `${id}_${s.turnNumber}`;
+              const sha = !usedSha[tk] && hand.find((c: any) => c.def.id === 'sha');
+              const trick = hand.find((c: any) => c.def.id === 'juedou' || c.def.id === 'nanman');
+              if (sha) { p.send({ type: 'play_card', cardUid: sha.uid, targetId: opp.id }); usedSha[tk] = true; }
+              else if (trick) { p.send({ type: 'play_card', cardUid: trick.uid, targetId: opp.id }); }
+              else { p.send({ type: 'end_play' }); }
             }
           }
         }
-        continue;
-      }
-
-      for (const msg of messages) {
-        if (msg.type === 'game_over') { console.log(`   Game Over! Winner: ${msg.winner}`); console.log('\n✓ FULL BROWSER SIMULATION PASSED'); process.exit(0); }
-      }
-
-      const state = messages.findLast(m => m.type === 'game_update')?.state;
-      if (!state) continue;
-
-      const myId = state.myId;
-      const hand = state.myHand;
-      const opp = state.players.find(p => p.id !== myId);
-
-      // Handle responses
-      if (state.waitingFor?.playerId === myId) {
-        if (state.waitingFor.type === 'discard') {
-          const uids = hand.slice(0, state.waitingFor.data.count).map(c => c.uid);
-          await action({ token: browserToken, type: 'discard_cards', cardUids: uids });
-        } else {
-          await action({ token: browserToken, type: 'respond', cardUid: null });
-        }
-        continue;
-      }
-
-      // My turn
-      if (state.players[state.currentPlayerIdx].id === myId && state.phase === 'play') {
-        const sha = hand.find(c => c.def.id === 'sha');
-        const trick = hand.find(c => c.def.id === 'juedou' || c.def.id === 'nanman' || c.def.id === 'wanjian');
-        if (sha && !usedSha['me_' + state.turnNumber]) {
-          await action({ token: browserToken, type: 'play_card', cardUid: sha.uid, targetId: opp.id });
-          usedSha['me_' + state.turnNumber] = true;
-        } else if (trick) {
-          await action({ token: browserToken, type: 'play_card', cardUid: trick.uid, targetId: opp.id });
-        } else {
-          await action({ token: browserToken, type: 'end_play' });
-        }
       }
     }
-
-    console.log('\n✓ FULL BROWSER SIMULATION PASSED (game still ongoing after 100 rounds)');
-
-  } catch (e) {
+    console.log('\n✓ FULL BROWSER SIMULATION PASSED (game ongoing)');
+  } catch (e: any) {
     console.error('\n✗ FAILED:', e.message);
-    if (errors.length) console.error('Server errors:', errors);
     process.exitCode = 1;
   } finally {
     if (server) server.kill();

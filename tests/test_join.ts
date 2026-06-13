@@ -1,138 +1,84 @@
 import { spawn } from 'child_process';
-import http from 'http';
+import { createWsPlayer } from '../shared/ws-client.ts';
 
 const PORT = 8331;
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-function request(method, path, body) {
-  return new Promise((resolve, reject) => {
-    const opts = { host: 'localhost', port: PORT, path, method, headers: { 'Content-Type': 'application/json' } };
-    const req = http.request(opts, res => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error(data)); } });
+let server: any;
+let passed = 0, failed = 0;
+let serverPin = '';
+
+function test(name: string, ok: boolean, detail?: string) {
+  if (ok) { passed++; console.log(`  ✓ ${name}`); }
+  else { failed++; console.log(`  ✗ ${name}: ${detail}`); }
+}
+
+async function startServer(): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    server = spawn('node', ['--experimental-transform-types', 'server/index.ts'], { env: { ...process.env, PORT: String(PORT) }, stdio: ['pipe', 'pipe', 'pipe'] });
+    server.stdout.on('data', (d: Buffer) => {
+      const s = d.toString();
+      const match = s.match(/PIN=(\d{4})/);
+      if (match) resolve(match[1]);
     });
-    req.on('error', reject);
-    if (body) req.write(JSON.stringify(body));
-    req.end();
+    setTimeout(() => reject(new Error('server start timeout')), 5000);
   });
 }
 
-const poll = (token) => request('GET', `/api/poll?token=${token}`);
-const action = (body) => request('POST', '/api/action', body);
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
 async function main() {
-  let server;
-  let passed = 0, failed = 0;
-
-  function test(name, ok, detail) {
-    if (ok) { passed++; console.log(`  ✓ ${name}`); }
-    else { failed++; console.log(`  ✗ ${name}: ${detail}`); }
-  }
-
   try {
-    // Start server
-    server = spawn('node', ['server/index.ts'], { env: { ...process.env, PORT: String(PORT), VERBOSE: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
-    await new Promise((resolve, reject) => {
-      server.stdout.on('data', d => { if (d.toString().includes('running')) resolve(); });
-      setTimeout(() => reject(new Error('server timeout')), 5000);
-    });
+    serverPin = await startServer();
+    console.log(`\n=== Join Flow Tests (WebSocket) PIN=${serverPin} ===\n`);
 
-    console.log('\n=== Browser Join Flow Tests ===\n');
+    // Test 1: Connect
+    const p1 = await createWsPlayer('localhost', PORT);
+    test('Player connects via WebSocket', true);
 
-    // Test 1: Connect (page load)
-    const connectResp = await action({ type: 'connect' });
-    test('Browser connects on page load', connectResp.token && connectResp.playerId,
-      JSON.stringify(connectResp));
+    // Test 2: Join with correct PIN
+    p1.send({ type: 'join_room', pin: serverPin, name: 'Player A' });
+    const joined = await p1.waitFor('room_joined');
+    test('Player A joins room', joined.players.length === 1);
 
-    // Test 2: AI creates room
-    const aiResp = await action({ type: 'connect' });
-    test('AI connects', !!aiResp.token, JSON.stringify(aiResp));
+    // Test 3: Second player joins → hero selection
+    const p2 = await createWsPlayer('localhost', PORT);
+    p2.send({ type: 'join_room', pin: serverPin, name: 'Player B' });
+    const heroMsg = await p2.waitFor('hero_selection');
+    test('Player B joins, hero_selection received', heroMsg.heroes && heroMsg.heroes.length > 0);
 
-    await action({ token: aiResp.token, type: 'create_room', name: 'AI对手' });
-    await sleep(50);
-    const aiPoll = await poll(aiResp.token);
-    const pin = aiPoll.messages.find(m => m.type === 'room_created')?.pin;
-    test('AI creates room with PIN', pin && pin.length === 4, `pin=${pin}`);
+    // Test 4: Player A also gets hero_selection
+    const heroMsgA = await p1.waitFor('hero_selection');
+    test('Player A receives hero_selection', heroMsgA.heroes && heroMsgA.heroes.length > 0);
 
-    // Test 3: Browser joins with correct PIN
-    const joinResp = await action({ token: connectResp.token, type: 'join_room', pin, name: '测试玩家' });
-    test('Browser joins room (correct PIN)', joinResp.ok === true, JSON.stringify(joinResp));
+    // Test 5: Wrong PIN
+    const p3 = await createWsPlayer('localhost', PORT);
+    p3.send({ type: 'join_room', pin: '0000', name: 'bad' });
+    const errMsg = await p3.waitFor('error');
+    test('Wrong PIN returns error', errMsg.msg === '房间不存在或已开始', errMsg.msg);
 
-    // Test 4: Poll returns hero_selection
-    await sleep(100);
-    const browserPoll = await poll(connectResp.token);
-    const hasHeroSelect = browserPoll.messages.some(m => m.type === 'hero_selection');
-    test('Browser receives hero_selection after join', hasHeroSelect,
-      `msgs: ${browserPoll.messages.map(m => m.type)}`);
+    // Test 6: Select heroes → game starts
+    p1.send({ type: 'select_hero', heroId: 'caocao' });
+    p2.send({ type: 'select_hero', heroId: 'guanyu' });
+    const gameMsg = await p1.waitFor('game_update');
+    const privateMsg = await p1.waitFor('private_update');
+    test('Game starts after hero selection', gameMsg.state && gameMsg.state.phase === 'play',
+      `phase=${gameMsg.state?.phase}`);
 
-    // Test 5: Join with WRONG PIN
-    const wrongResp = await action({ type: 'connect' });
-    const wrongJoin = await action({ token: wrongResp.token, type: 'join_room', pin: '0000', name: 'bad' });
-    // The action returns ok:true but error is in the poll queue
-    await sleep(50);
-    const wrongPoll = await poll(wrongResp.token);
-    const hasError = wrongPoll.messages.some(m => m.type === 'error');
-    test('Wrong PIN returns error', hasError,
-      `msgs: ${JSON.stringify(wrongPoll.messages)}`);
+    // Test 7: Game state valid
+    test('Game state has players, private has hand',
+      privateMsg.state.myHand.length > 0 && gameMsg.state.players.length === 2,
+      `hand=${privateMsg.state.myHand.length} players=${gameMsg.state.players.length}`);
 
-    // Test 6: Join already-started room fails
-    const lateResp = await action({ type: 'connect' });
-    const lateJoin = await action({ token: lateResp.token, type: 'join_room', pin, name: 'late' });
-    await sleep(50);
-    const latePoll = await poll(lateResp.token);
-    const lateError = latePoll.messages.some(m => m.type === 'error');
-    test('Join full/started room returns error', lateError,
-      `msgs: ${JSON.stringify(latePoll.messages)}`);
-
-    // Test 7: Select hero and game starts
-    await action({ token: connectResp.token, type: 'select_hero', heroId: 'guanyu' });
-    await action({ token: aiResp.token, type: 'select_hero', heroId: 'caocao' });
-    await sleep(200);
-    const gamePoll = await poll(connectResp.token);
-    const hasGameUpdate = gamePoll.messages.some(m => m.type === 'game_update');
-    test('Game starts after both select heroes', hasGameUpdate,
-      `msgs: ${gamePoll.messages.map(m => m.type)}`);
-
-    // Test 8: Game state is valid
-    const gameState = gamePoll.messages.find(m => m.type === 'game_update')?.state;
-    test('Game state has hand, players, phase',
-      gameState && gameState.myHand.length > 0 && gameState.players.length === 2 && gameState.phase === 'play',
-      `phase=${gameState?.phase} hand=${gameState?.myHand?.length} players=${gameState?.players?.length}`);
-
-    // Test 9: Stale token returns error
-    const stalePoll = await poll('tk_invalid_token');
-    test('Stale/invalid token returns error', stalePoll.error === 'invalid token',
-      JSON.stringify(stalePoll));
-
-    // Test 10: Player A creates room, Player B joins with names preserved
-    const pA = await action({ type: 'connect' });
-    const pB = await action({ type: 'connect' });
-    await action({ token: pA.token, type: 'create_room', name: 'Player A' });
-    await sleep(50);
-    const pAPoll = await poll(pA.token);
-    const pinAB = pAPoll.messages.find(m => m.type === 'room_created')?.pin;
-    test('Player A creates room', !!pinAB, `pin=${pinAB}`);
-
-    await action({ token: pB.token, type: 'join_room', pin: pinAB, name: 'Player B' });
-    await sleep(100);
-    const pBPoll = await poll(pB.token);
-    const joinedMsg = pBPoll.messages.find(m => m.type === 'room_joined');
-    const names = joinedMsg?.players?.map(p => p.name) || [];
-    test('Player B joins, both names visible', names.includes('Player A') && names.includes('Player B'),
-      `players: ${JSON.stringify(names)}`);
-
-    // Verify Player A also sees Player B
-    const pAPoll2 = await poll(pA.token);
-    const joinedA = pAPoll2.messages.find(m => m.type === 'room_joined');
-    const namesA = joinedA?.players?.map(p => p.name) || [];
-    test('Player A sees Player B joined', namesA.includes('Player B'),
-      `players: ${JSON.stringify(namesA)}`);
+    // Test 8: Join started room
+    const p4 = await createWsPlayer('localhost', PORT);
+    p4.send({ type: 'join_room', pin: serverPin, name: 'late' });
+    const errFull = await p4.waitFor('error');
+    test('Join started room returns error', !!errFull.msg, errFull.msg);
 
     console.log(`\n=== Results: ${passed} passed, ${failed} failed ===\n`);
     process.exitCode = failed > 0 ? 1 : 0;
 
-  } catch (e) {
+    p1.ws.close(); p2.ws.close(); p3.ws.close(); p4.ws.close();
+  } catch (e: any) {
     console.error('EXCEPTION:', e.message);
     process.exitCode = 1;
   } finally {

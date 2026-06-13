@@ -1,6 +1,6 @@
-import { Game } from '../server/engine.ts';
-import { buildDeck, shuffleDeck } from '../server/cards.ts';
-import { HEROES } from '../server/heroes.ts';
+import { Game } from '../server/game/engine.ts';
+import { buildDeck, shuffleDeck } from '../server/game/cards/index.ts';
+import { getHeroes } from '../server/game/heroes/index.ts';
 import assert from 'assert';
 
 let passed = 0;
@@ -50,10 +50,10 @@ test('deck contains sha, shan, tao', () => {
 
 console.log('\n=== Heroes Tests ===');
 
-test('5 heroes defined', () => { assert.strictEqual(HEROES.length, 5); });
+test('5 heroes defined', () => { assert.strictEqual(getHeroes().length, 5); });
 
 test('each hero has required fields', () => {
-  for (const h of HEROES) {
+  for (const h of getHeroes()) {
     assert(h.id && h.nameCn && h.maxHp >= 3 && h.skillIds.length > 0);
   }
 });
@@ -112,8 +112,8 @@ test('playing sha sets waitingFor respond_attack', () => {
   const sha = { uid: 9000, def: { id: 'sha', name: 'Attack', nameCn: '杀', type: 'basic', suit: 'spade', number: 1 } };
   p.hand.push(sha);
   game.playCard(p.id, 9000);
-  assert(game.state.waitingFor);
-  assert.strictEqual(game.state.waitingFor.type, 'respond_attack');
+  assert(game.waitingFor);
+  assert.strictEqual(game.waitingFor.type, 'respond_attack');
 });
 
 test('responding with shan cancels attack', () => {
@@ -186,11 +186,11 @@ test('duel alternates sha responses', () => {
   p1.hand.push({ uid: 9030, def: { id: 'juedou', nameCn: '决斗', type: 'trick', suit: 'spade', number: 1 } });
   p2.hand.push({ uid: 9031, def: { id: 'sha', nameCn: '杀', type: 'basic', suit: 'club', number: 4 } });
   game.playCard(p1.id, 9030);
-  assert.strictEqual(game.state.waitingFor.playerId, p2.id);
-  assert.strictEqual(game.state.waitingFor.type, 'respond_duel');
+  assert.strictEqual(game.waitingFor.playerId, p2.id);
+  assert.strictEqual(game.waitingFor.type, 'respond_duel');
   // p2 plays sha, now p1 must respond
   game.respond(p2.id, 9031);
-  assert.strictEqual(game.state.waitingFor.playerId, p1.id);
+  assert.strictEqual(game.waitingFor.playerId, p1.id);
 });
 
 test('wuzhong draws 2 cards', () => {
@@ -210,8 +210,8 @@ test('barbarian invasion requires sha from opponent', () => {
   const p2 = game.state.players[1];
   p1.hand.push({ uid: 9050, def: { id: 'nanman', nameCn: '南蛮入侵', type: 'trick', suit: 'spade', number: 7 } });
   game.playCard(p1.id, 9050);
-  assert.strictEqual(game.state.waitingFor.playerId, p2.id);
-  assert.strictEqual(game.state.waitingFor.type, 'respond_barbarian');
+  assert.strictEqual(game.waitingFor.playerId, p2.id);
+  assert.strictEqual(game.waitingFor.type, 'respond_barbarian');
 });
 
 console.log('\n=== Equipment Tests ===');
@@ -320,9 +320,9 @@ test('must discard to hp when hand > hp at end of turn', () => {
   // Give extra cards
   while (p.hand.length < 5) p.hand.push({ uid: 9200 + p.hand.length, def: { id: 'shan', nameCn: '闪', type: 'basic', suit: 'diamond', number: 2 } });
   game.endPlay(p.id);
-  assert(game.state.waitingFor);
-  assert.strictEqual(game.state.waitingFor.type, 'discard');
-  assert.strictEqual(game.state.waitingFor.data.count, p.hand.length - p.hp);
+  assert(game.waitingFor);
+  assert.strictEqual(game.waitingFor.type, 'discard');
+  assert.strictEqual(game.waitingFor.data.count, p.hand.length - p.hp);
 });
 
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===\n`);

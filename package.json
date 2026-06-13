@@ -4,16 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --experimental-strip-types server/index.ts",
+    "start": "node --experimental-transform-types server/index.ts",
     "build": "npx tsc --noEmit",
-    "test": "node --experimental-strip-types tests/test.ts && node --experimental-strip-types tests/test_join.ts && node --experimental-strip-types tests/test_game_e2e.ts",
-    "test:unit": "node --experimental-strip-types tests/test.ts",
-    "test:e2e": "node --experimental-strip-types tests/test_game_e2e.ts",
-    "test:browser": "node --experimental-strip-types tests/test_browser_sim.ts",
+    "test": "node --experimental-transform-types tests/test.ts && node --experimental-transform-types tests/test_join.ts && node --experimental-transform-types tests/test_game_e2e.ts",
+    "test:unit": "node --experimental-transform-types tests/test.ts",
+    "test:e2e": "node --experimental-transform-types tests/test_game_e2e.ts",
+    "test:browser": "node --experimental-transform-types tests/test_browser_sim.ts",
     "typecheck": "npx tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
     "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0"
   }
 }

@@ -1,119 +1,88 @@
-import http from 'http';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const { createGameClient } = require('../shared/game-client.cjs');
+import { WsClient } from '../shared/ws-client.ts';
 
-const TOKEN = process.env.AI_TOKEN;
-const PORT = 8331;
-
-function req(method: string, path: string, body?: any): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const opts = { host: 'localhost', port: PORT, path, method, headers: { 'Content-Type': 'application/json' } };
-    const r = http.request(opts, res => {
-      let d = ''; res.on('data', (c: any) => d += c);
-      res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { resolve({}); } });
-    });
-    r.on('error', reject);
-    if (body) r.write(JSON.stringify(body));
-    r.end();
-  });
+const args = process.argv.slice(2);
+function getArg(name: string, def: string): string {
+  const i = args.indexOf(name);
+  return i >= 0 && args[i + 1] ? args[i + 1] : def;
 }
+const HOST = getArg('--host', 'localhost');
+const PORT = Number(getArg('--port', '3000'));
+const NAME = getArg('--name', 'AI');
+const JOIN_PIN = getArg('--join', '');
 
-const poll = (): Promise<any> => req('GET', `/api/poll?token=${TOKEN}`);
-const act = (body: any): Promise<any> => req('POST', '/api/action', { ...body, token: TOKEN });
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+const client = createGameClient();
+const ws = new WsClient();
+let usedShaThisTurn: Record<string, boolean> = {};
 
-let heroSelected = false;
-let usedShaThisTurn = {};
-
-async function loop() {
-  console.log('AI Bot started, waiting for opponent to join...');
-  for (let i = 0; i < 3000; i++) {
-    await sleep(1000);
-    const { messages } = await poll();
-    if (!messages || messages.length === 0) continue;
-
-    for (const msg of messages) {
-      if (msg.type === 'game_over') {
-        console.log(`Game Over! Winner: ${msg.winner}`);
-        process.exit(0);
-      }
-      if (msg.type === 'hero_selection' && !heroSelected) {
-        console.log('Selecting hero: 曹操');
-        await act({ type: 'select_hero', heroId: 'caocao' });
-        heroSelected = true;
-        continue;
-      }
-      if (msg.type === 'game_update') {
-        await handleState(msg.state);
-      }
-    }
+ws.on('message', (msg: any) => {
+  client.handleMessage(msg);
+  if (msg.type === 'game_over') {
+    console.log(`Game Over! Winner: ${msg.winner}`);
+    process.exit(0);
   }
-}
+});
 
-async function handleState(state) {
+client.setOnChange((state: any, msg: any) => {
+  if (state.screen === 'hero_select') {
+    ws.send({ type: 'select_hero', heroId: 'caocao' });
+    console.log('Selected hero: 曹操');
+    return;
+  }
+  if (state.screen !== 'game' || !state.gameState) return;
+
+  const gs = state.gameState;
   const myId = state.myId;
   const hand = state.myHand;
-  const opp = state.players.find(p => p.id !== myId);
+  const me = gs.players.find((p: any) => p.id === myId);
+  const opp = gs.players.find((p: any) => p.id !== myId);
+  if (!opp) return;
 
-  // Must respond
-  if (state.waitingFor && state.waitingFor.playerId === myId) {
-    const w = state.waitingFor;
+  if (gs.waitingFor && gs.waitingFor.playerId === myId) {
+    const w = gs.waitingFor;
     if (w.type === 'discard') {
-      const uids = hand.slice(0, w.data.count).map(c => c.uid);
-      console.log(`Discarding ${uids.length} cards`);
-      await act({ type: 'discard_cards', cardUids: uids });
+      const uids = hand.slice(0, w.data.count).map((c: any) => c.uid);
+      ws.send({ type: 'discard_cards', cardUids: uids });
     } else if (w.type === 'respond_attack') {
-      const shan = hand.find(c => c.def.id === 'shan');
-      if (shan) {
-        console.log('Using 闪 to dodge');
-        await act({ type: 'respond', cardUid: shan.uid });
-      } else {
-        console.log('No 闪, taking damage');
-        await act({ type: 'respond', cardUid: null });
-      }
+      const shan = hand.find((c: any) => c.def.id === 'shan');
+      ws.send({ type: 'respond', cardUid: shan ? shan.uid : null });
     } else if (w.type === 'respond_duel' || w.type === 'respond_barbarian') {
-      const sha = hand.find(c => c.def.id === 'sha');
-      if (sha) {
-        console.log('Responding with 杀');
-        await act({ type: 'respond', cardUid: sha.uid });
-      } else {
-        console.log('No 杀, taking damage');
-        await act({ type: 'respond', cardUid: null });
-      }
+      const sha = hand.find((c: any) => c.def.id === 'sha');
+      ws.send({ type: 'respond', cardUid: sha ? sha.uid : null });
     } else {
-      await act({ type: 'respond', cardUid: null });
+      ws.send({ type: 'respond', cardUid: null });
     }
     return;
   }
 
-  // My turn
-  const isMyTurn = state.players[state.currentPlayerIdx].id === myId;
-  if (!isMyTurn || state.phase !== 'play') return;
+  const isMyTurn = gs.players[gs.currentPlayerIdx].id === myId;
+  if (!isMyTurn || gs.phase !== 'play') return;
 
-  const turnKey = state.turnNumber;
-  const me = state.players.find(p => p.id === myId);
-
-  // Peach if hurt
+  const turnKey = String(gs.turnNumber);
   if (me.hp < me.maxHp) {
-    const tao = hand.find(c => c.def.id === 'tao');
-    if (tao) { console.log('Using 桃'); await act({ type: 'play_card', cardUid: tao.uid }); return; }
+    const tao = hand.find((c: any) => c.def.id === 'tao');
+    if (tao) { ws.send({ type: 'play_card', cardUid: tao.uid }); return; }
   }
-  // Equip
-  const eq = hand.find(c => c.def.type === 'equipment');
-  if (eq) { console.log(`Equipping ${eq.def.nameCn}`); await act({ type: 'play_card', cardUid: eq.uid }); return; }
-  // Wuzhong
-  const wz = hand.find(c => c.def.id === 'wuzhong');
-  if (wz) { console.log('Using 无中生有'); await act({ type: 'play_card', cardUid: wz.uid }); return; }
-  // Sha
+  const eq = hand.find((c: any) => c.def.type === 'equipment');
+  if (eq) { ws.send({ type: 'play_card', cardUid: eq.uid }); return; }
+  const wz = hand.find((c: any) => c.def.id === 'wuzhong');
+  if (wz) { ws.send({ type: 'play_card', cardUid: wz.uid }); return; }
   if (!usedShaThisTurn[turnKey]) {
-    const sha = hand.find(c => c.def.id === 'sha');
-    if (sha) { console.log('Using 杀'); await act({ type: 'play_card', cardUid: sha.uid, targetId: opp.id }); usedShaThisTurn[turnKey] = true; return; }
+    const sha = hand.find((c: any) => c.def.id === 'sha');
+    if (sha) { ws.send({ type: 'play_card', cardUid: sha.uid, targetId: opp.id }); usedShaThisTurn[turnKey] = true; return; }
   }
-  // Tricks
-  const trick = hand.find(c => c.def.id === 'juedou' || c.def.id === 'nanman' || c.def.id === 'wanjian');
-  if (trick) { console.log(`Using ${trick.def.nameCn}`); await act({ type: 'play_card', cardUid: trick.uid, targetId: opp.id }); return; }
+  const trick = hand.find((c: any) => c.def.id === 'juedou' || c.def.id === 'nanman' || c.def.id === 'wanjian');
+  if (trick) { ws.send({ type: 'play_card', cardUid: trick.uid, targetId: opp.id }); return; }
+  ws.send({ type: 'end_play' });
+});
 
-  // End turn
-  console.log('Ending turn');
-  await act({ type: 'end_play' });
+async function main() {
+  if (!JOIN_PIN) { console.error('Usage: ai_bot.ts --join <PIN> [--port PORT] [--name NAME]'); process.exit(1); }
+  await ws.connect(HOST, PORT);
+  console.log(`AI Bot connected to ${HOST}:${PORT}`);
+  ws.send({ type: 'join_room', pin: JOIN_PIN, name: NAME });
 }
 
-loop().catch(e => { console.error('Bot error:', e); process.exit(1); });
+main().catch(e => { console.error('Error:', e.message); process.exit(1); });
