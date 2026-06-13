@@ -1,9 +1,9 @@
 (function() {
-  let token = null;
+  let ws = null;
   let myId = null;
   let gameState = null;
   let selectedCards = [];
-  let pollInterval = null;
+  let reconnectTimer = null;
 
   const $ = id => document.getElementById(id);
   const screens = ['lobby', 'waiting', 'hero-select', 'game', 'gameover'];
@@ -12,28 +12,19 @@
     $(id).classList.add('active');
   }
 
-  async function api(body) {
-    const res = await fetch('/api/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, token }) });
-    return res.json();
+  function connect() {
+    ws = new WebSocket(`ws://${location.host}`);
+    ws.onopen = () => { $('lobby-status').textContent = ''; };
+    ws.onclose = () => { $('lobby-status').textContent = '连接断开，重连中...'; reconnectTimer = setTimeout(connect, 2000); };
+    ws.onerror = () => {};
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      handleMsg(msg);
+    };
   }
 
-  async function connect() {
-    const res = await fetch('/api/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'connect' }) });
-    const data = await res.json();
-    token = data.token;
-    myId = data.playerId;
-    startPolling();
-  }
-
-  function startPolling() {
-    if (pollInterval) return;
-    pollInterval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/poll?token=${token}`);
-        const data = await res.json();
-        if (data.messages) data.messages.forEach(handleMsg);
-      } catch {}
-    }, 800);
+  function send(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   }
 
   function handleMsg(msg) {
@@ -68,16 +59,15 @@
   }
 
   // Lobby
-  $('btn-create').onclick = async () => {
+  $('btn-create').onclick = () => {
     const name = $('player-name').value.trim() || '玩家';
-    await api({ type: 'create_room', name });
+    send({ type: 'create_room', name });
   };
-  $('btn-join').onclick = async () => {
+  $('btn-join').onclick = () => {
     const name = $('player-name').value.trim() || '玩家';
     const pin = $('pin-input').value.trim();
     if (pin.length !== 4) { $('lobby-status').textContent = '请输入4位PIN'; return; }
-    const res = await api({ type: 'join_room', pin, name });
-    if (res.error) $('lobby-status').textContent = res.error;
+    send({ type: 'join_room', pin, name });
   };
 
   connect();
@@ -90,7 +80,7 @@
       const div = document.createElement('div');
       div.className = 'hero-card';
       div.innerHTML = `<div class="hero-name">${h.nameCn}</div><div class="hero-kingdom">${kingdoms[h.kingdom]}</div><div class="hero-hp">${'❤'.repeat(h.maxHp)}</div>`;
-      div.onclick = () => api({ type: 'select_hero', heroId: h.id });
+      div.onclick = () => send({ type: 'select_hero', heroId: h.id });
       grid.appendChild(div);
     });
   }
@@ -154,11 +144,11 @@
     if (waiting && waiting.playerId === myId) {
       if (waiting.type === 'discard') {
         btns.appendChild(mkBtn(`弃牌 (需弃${waiting.data.count}张)`, () => {
-          if (selectedCards.length === waiting.data.count) { api({ type: 'discard_cards', cardUids: selectedCards }); selectedCards = []; }
+          if (selectedCards.length === waiting.data.count) { send({ type: 'discard_cards', cardUids: selectedCards }); selectedCards = []; }
         }));
       } else {
-        btns.appendChild(mkBtn('出牌响应', () => { api({ type: 'respond', cardUid: selectedCards[0] || null }); selectedCards = []; }));
-        btns.appendChild(mkBtn('放弃', () => { api({ type: 'respond', cardUid: null }); selectedCards = []; }, 'secondary'));
+        btns.appendChild(mkBtn('出牌响应', () => { send({ type: 'respond', cardUid: selectedCards[0] || null }); selectedCards = []; }));
+        btns.appendChild(mkBtn('放弃', () => { send({ type: 'respond', cardUid: null }); selectedCards = []; }, 'secondary'));
       }
       return;
     }
@@ -167,15 +157,15 @@
       btns.appendChild(mkBtn('出牌', () => {
         if (selectedCards.length === 1) {
           const opp = gameState.players.find(p => p.id !== myId);
-          api({ type: 'play_card', cardUid: selectedCards[0], targetId: opp?.id });
+          send({ type: 'play_card', cardUid: selectedCards[0], targetId: opp?.id });
           selectedCards = [];
         }
       }));
       const me = gameState.players.find(p => p.id === myId);
       if (me?.heroId === 'sunquan' && selectedCards.length > 0) {
-        btns.appendChild(mkBtn('制衡', () => { api({ type: 'zhiheng', cardUids: selectedCards }); selectedCards = []; }));
+        btns.appendChild(mkBtn('制衡', () => { send({ type: 'zhiheng', cardUids: selectedCards }); selectedCards = []; }));
       }
-      btns.appendChild(mkBtn('结束出牌', () => { api({ type: 'end_play' }); selectedCards = []; }, 'secondary'));
+      btns.appendChild(mkBtn('结束出牌', () => { send({ type: 'end_play' }); selectedCards = []; }, 'secondary'));
     }
   }
 

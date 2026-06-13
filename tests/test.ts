@@ -1,6 +1,6 @@
-import { Game } from '../server/engine.mjs';
-import { buildDeck, shuffleDeck } from '../server/cards.mjs';
-import { HEROES } from '../server/heroes.mjs';
+import { Game } from '../server/engine.ts';
+import { buildDeck, shuffleDeck } from '../server/cards.ts';
+import { HEROES } from '../server/heroes.ts';
 import assert from 'assert';
 
 let passed = 0;

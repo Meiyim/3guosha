@@ -1,19 +1,21 @@
-function spread(id, suit, numbers) {
+import type { CardDef, CardInstance, CardSuit } from './types.ts';
+
+function spread(id: string, suit: CardSuit, numbers: number[]) {
   return numbers.map(n => ({ id, suit, number: n }));
 }
 
-const basicCards = [
+const basicCards: Omit<CardDef, 'suit' | 'number'>[] = [
   { id: 'sha', name: 'Attack', nameCn: '杀', type: 'basic' },
   { id: 'shan', name: 'Dodge', nameCn: '闪', type: 'basic' },
   { id: 'tao', name: 'Peach', nameCn: '桃', type: 'basic' },
 ];
-const trickCards = [
+const trickCards: Omit<CardDef, 'suit' | 'number'>[] = [
   { id: 'juedou', name: 'Duel', nameCn: '决斗', type: 'trick' },
   { id: 'nanman', name: 'Barbarian Invasion', nameCn: '南蛮入侵', type: 'trick' },
   { id: 'wanjian', name: 'Arrow Barrage', nameCn: '万箭齐发', type: 'trick' },
   { id: 'wuzhong', name: 'Bountiful Harvest', nameCn: '无中生有', type: 'trick' },
 ];
-const equipCards = [
+const equipCards: Omit<CardDef, 'suit' | 'number'>[] = [
   { id: 'zhuge', name: 'Zhuge Crossbow', nameCn: '诸葛连弩', type: 'equipment', equipSlot: 'weapon' },
   { id: 'plus_horse', name: '+1 Horse', nameCn: '+1马', type: 'equipment', equipSlot: 'horse_plus' },
   { id: 'minus_horse', name: '-1 Horse', nameCn: '-1马', type: 'equipment', equipSlot: 'horse_minus' },
@@ -46,16 +48,16 @@ const deckList = [
 const allCardDefs = [...basicCards, ...trickCards, ...equipCards];
 const defMap = new Map(allCardDefs.map(d => [d.id, d]));
 
-export function buildDeck() {
+export function buildDeck(): CardInstance[] {
   let uid = 1;
   return deckList.map(entry => {
-    const base = defMap.get(entry.id);
-    const def = { ...base, suit: entry.suit, number: entry.number };
+    const base = defMap.get(entry.id)!;
+    const def: CardDef = { ...base, suit: entry.suit, number: entry.number };
     return { uid: uid++, def };
   });
 }
 
-export function shuffleDeck(deck) {
+export function shuffleDeck(deck: CardInstance[]): void {
   for (let i = deck.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [deck[i], deck[j]] = [deck[j], deck[i]];

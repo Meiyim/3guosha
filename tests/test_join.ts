@@ -32,7 +32,7 @@ async function main() {
 
   try {
     // Start server
-    server = spawn('node', ['server/index.mjs'], { env: { ...process.env, PORT: String(PORT), VERBOSE: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
+    server = spawn('node', ['server/index.ts'], { env: { ...process.env, PORT: String(PORT), VERBOSE: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
     await new Promise((resolve, reject) => {
       server.stdout.on('data', d => { if (d.toString().includes('running')) resolve(); });
       setTimeout(() => reject(new Error('server timeout')), 5000);

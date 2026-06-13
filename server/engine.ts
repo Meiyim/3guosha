@@ -1,11 +1,14 @@
-import { buildDeck, shuffleDeck } from './cards.mjs';
-import { HEROES } from './heroes.mjs';
+import { buildDeck, shuffleDeck } from './cards.ts';
+import { HEROES } from './heroes.ts';
+import type { GameState, PlayerState, CardInstance, WaitingAction } from './types.ts';
 
 export class Game {
-  constructor(players) {
+  state: GameState;
+  logs: string[] = [];
+
+  constructor(players: { id: string; name: string; heroId: string }[]) {
     const deck = buildDeck();
     shuffleDeck(deck);
-    this.logs = [];
     this.state = {
       players: players.map(p => {
         const hero = HEROES.find(h => h.id === p.heroId);

@@ -2,8 +2,8 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { MinimalWebSocketServer } from './ws.mjs';
-import { handleConnection, handleHttpAction, handleHttpPoll } from './room.mjs';
+import { MinimalWebSocketServer } from './ws.ts';
+import { handleConnection, handleHttpAction, handleHttpPoll } from './room.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;

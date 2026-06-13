@@ -24,7 +24,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function startServer() {
   return new Promise((resolve, reject) => {
-    server = spawn('node', ['server/index.mjs'], { env: { ...process.env, PORT: String(SERVER_PORT) }, stdio: ['pipe', 'pipe', 'pipe'] });
+    server = spawn('node', ['server/index.ts'], { env: { ...process.env, PORT: String(SERVER_PORT) }, stdio: ['pipe', 'pipe', 'pipe'] });
     server.stderr.on('data', d => { if (d.toString().includes('Error')) console.error('SERVER ERR:', d.toString()); });
     server.stdout.on('data', d => { if (d.toString().includes('running')) resolve(); });
     setTimeout(() => reject(new Error('server start timeout')), 5000);

@@ -3,11 +3,11 @@ import http from 'http';
 const TOKEN = process.env.AI_TOKEN;
 const PORT = 8331;
 
-function req(method, path, body) {
+function req(method: string, path: string, body?: any): Promise<any> {
   return new Promise((resolve, reject) => {
     const opts = { host: 'localhost', port: PORT, path, method, headers: { 'Content-Type': 'application/json' } };
     const r = http.request(opts, res => {
-      let d = ''; res.on('data', c => d += c);
+      let d = ''; res.on('data', (c: any) => d += c);
       res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { resolve({}); } });
     });
     r.on('error', reject);
@@ -16,9 +16,9 @@ function req(method, path, body) {
   });
 }
 
-const poll = () => req('GET', `/api/poll?token=${TOKEN}`);
-const act = (body) => req('POST', '/api/action', { ...body, token: TOKEN });
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const poll = (): Promise<any> => req('GET', `/api/poll?token=${TOKEN}`);
+const act = (body: any): Promise<any> => req('POST', '/api/action', { ...body, token: TOKEN });
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 let heroSelected = false;
 let usedShaThisTurn = {};

@@ -1,5 +1,5 @@
-import { Game } from './engine.mjs';
-import { HEROES } from './heroes.mjs';
+import { Game } from './engine.ts';
+import { HEROES } from './heroes.ts';
 
 const VERBOSE = process.env.VERBOSE === '1';
 function debug(...args) { if (VERBOSE) console.log('[DEBUG]', ...args); }
@@ -146,7 +146,7 @@ function buildPublicState(game, forPlayerId) {
     players: s.players.map(p => ({
       id: p.id, name: p.name, heroId: p.heroId,
       hp: p.hp, maxHp: p.maxHp, handCount: p.hand.length,
-      equipment: Object.fromEntries(Object.entries(p.equipment).map(([slot, card]) => [slot, card.def])),
+      equipment: Object.fromEntries(Object.entries(p.equipment).map(([slot, card]) => [slot, (card as any).def])),
       alive: p.alive,
     })),
     currentPlayerIdx: s.currentPlayerIdx, phase: s.phase, deckCount: s.deck.length,
