@@ -57,7 +57,12 @@ function sendState(phase: string, waitingFor: any = null) {
       waitingFor,
     }
   });
-  send({ type: 'private_update', state: { myId, myHand: hand, playableUids: hand.filter(c => c.def.id !== 'shan').map(c => c.uid) } });
+  const playableUids = hand.filter(c => {
+    if (c.def.id === 'shan') return false;
+    if (c.def.id === 'tao' && hp >= maxHp) return false;
+    return true;
+  }).map(c => c.uid);
+  send({ type: 'private_update', state: { myId, myHand: hand, playableUids } });
 }
 
 function startTurn() {
@@ -93,10 +98,20 @@ wss.on('connection', (socket: MinimalWebSocket) => {
 
       case 'play_card': {
         const idx = hand.findIndex(c => c.uid === msg.cardUid);
-        if (idx !== -1) {
-          const card = hand.splice(idx, 1)[0];
-          send({ type: 'log', msg: `使用了 ${card.def.nameCn} → 假想敌` });
+        if (idx === -1) { sendState('play'); break; }
+        const card = hand[idx];
+        if (card.def.id === 'shan') {
+          send({ type: 'log', msg: '该牌当前不可使用' });
+          sendState('play');
+          break;
         }
+        if (card.def.id === 'tao' && hp >= maxHp) {
+          send({ type: 'log', msg: '该牌当前不可使用' });
+          sendState('play');
+          break;
+        }
+        hand.splice(idx, 1);
+        send({ type: 'log', msg: `使用了 ${card.def.nameCn} → 假想敌` });
         sendState('play');
         break;
       }

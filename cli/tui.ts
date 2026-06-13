@@ -1,10 +1,14 @@
 import * as http from 'http';
 import * as crypto from 'crypto';
 import { createRequire } from 'module';
+import { Selector } from './selector.ts';
 const require = createRequire(import.meta.url);
 const { createGameClient, formatCard, hpText, formatEquip, phaseName, suitSymbol, kingdomName } = require('../shared/game-client.cjs');
 const { getCardHandler } = require('../server/game/cards/index.ts');
 const { TargetType } = require('../server/game/types.ts');
+require('../server/game/cards/basic.ts');
+require('../server/game/cards/tricks.ts');
+require('../server/game/cards/equip.ts');
 
 const args = process.argv.slice(2);
 function getArg(name: string, def: string): string {
@@ -18,22 +22,28 @@ const JOIN_PIN = getArg('--join', '');
 
 const client = createGameClient();
 let sendFn: (obj: any) => void = () => {};
-let cursor = 0;
-let mode: 'hand' | 'target' | 'hero_select' = 'hero_select';
-let selectedCardUid: number | null = null; // card being played (shown highlighted during target selection)
-let targetCursor = 0;
+let selectedCardUid: number | null = null;
 let cols = process.stdout.columns || 80;
 let rows = process.stdout.rows || 24;
 
 // Cards that need a target — derived from handler's targetType
-function needsTarget(cardId: string): boolean {
-  try {
-    const handler = getCardHandler(cardId);
-    return handler?.targetType === 'single';
-  } catch { return TARGET_CARDS.has(cardId); }
-}
-// Fallback set in case handler not loaded
 const TARGET_CARDS = new Set(['sha', 'juedou']);
+function needsTarget(cardId: string): boolean {
+  const handler = getCardHandler(cardId);
+  if (handler) return handler.targetType === 'single';
+  return TARGET_CARDS.has(cardId);
+}
+
+// Client-side playability check — delegates to card handler's canPlay
+function canPlayCard(card: any): boolean {
+  const handler = getCardHandler(card.def.id);
+  if (!handler) return true;
+  if (!handler.canPlay) return true;
+  const me = client.getMyPlayer();
+  if (!me) return true;
+  const fakeCtx = { state: client.state.gameState };
+  return handler.canPlay(fakeCtx, me, card);
+}
 
 // ANSI helpers
 const ESC = '\x1b';
@@ -143,6 +153,80 @@ function connectWs(): Promise<void> {
   });
 }
 
+// === Selectors ===
+const handSelector = new Selector<any>({
+  items: [],
+  onConfirm(card, idx) {
+    const state = client.state;
+    const gs = state.gameState;
+    if (!gs) return;
+    const waiting = gs.waitingFor;
+
+    if (waiting && waiting.playerId === state.myId) {
+      if (waiting.type === 'discard') {
+        client.toggleCard(card.uid); render();
+      } else {
+        sendFn({ type: 'respond', cardUid: card.uid });
+      }
+    } else if (client.isMyTurn() && gs.phase === 'play') {
+      const playableUids = state.playableUids || [];
+      if (playableUids.length > 0 && !playableUids.includes(card.uid)) {
+        logLines.push('该牌不可使用'); render(); return;
+      }
+      if (playableUids.length === 0 && !canPlayCard(card)) {
+        logLines.push('该牌不可使用'); render(); return;
+      }
+      if (needsTarget(card.def.id)) {
+        selectedCardUid = card.uid;
+        const opponents = gs.players.filter((p: any) => p.id !== state.myId);
+        targetSelector.setItems(opponents);
+        targetSelector.cursor = 0;
+        activeSelector = targetSelector;
+        render();
+      } else {
+        sendFn({ type: 'play_card', cardUid: card.uid });
+      }
+    }
+  },
+  onCancel() {
+    const state = client.state;
+    const gs = state.gameState;
+    const waiting = gs?.waitingFor;
+    if (waiting && waiting.playerId === state.myId && waiting.type !== 'discard') {
+      sendFn({ type: 'respond', cardUid: null });
+    }
+  },
+});
+
+const targetSelector = new Selector<any>({
+  items: [],
+  onConfirm(target) {
+    if (selectedCardUid !== null) {
+      sendFn({ type: 'play_card', cardUid: selectedCardUid, targetId: target.id });
+    }
+    selectedCardUid = null;
+    activeSelector = handSelector;
+    render();
+  },
+  onCancel() {
+    selectedCardUid = null;
+    activeSelector = handSelector;
+    render();
+  },
+});
+
+const heroSelector = new Selector<any>({
+  items: [],
+  onConfirm(hero) {
+    sendFn({ type: 'select_hero', heroId: hero.id });
+    heroSelector.cursor = 0;
+    clear(); w(bold('已选择武将\n') + '等待对手...\n');
+  },
+  onCancel() {},
+});
+
+let activeSelector: Selector<any> = heroSelector;
+
 const logLines: string[] = [];
 
 function render() {
@@ -157,10 +241,11 @@ function render() {
 
   if (state.screen === 'hero_select') {
     if (!state.heroes) { w('等待其他玩家...\n'); return; }
+    heroSelector.setItems(state.heroes);
     w(bold('选择武将') + '  [↑↓/Tab] 移动  [Enter] 确认\n\n');
     state.heroes.forEach((h: any, i: number) => {
       const line = ` ${h.nameCn} (${kingdomName(h.kingdom)}) HP:${'❤'.repeat(h.maxHp)} [${h.skillIds.join(',')}]`;
-      w((i === cursor ? invert(` → ${line} `) : `   ${line}`) + '\n');
+      w((i === heroSelector.cursor ? invert(` → ${line} `) : `   ${line}`) + '\n');
     });
     return;
   }
@@ -188,7 +273,7 @@ function render() {
     const opponents = gs.players.filter((p: any) => p.id !== state.myId);
     const oppWidth = Math.min(22, Math.floor((cols - 2) / Math.max(opponents.length, 1)));
     const oppLines: string[][] = opponents.map((p: any, oi: number) => {
-      const isTarget = mode === 'target' && oi === targetCursor;
+      const isTarget = activeSelector === targetSelector && oi === targetSelector.cursor;
       const nameStr = isTarget ? bgYellow(` ▶ ${p.name}`) : ` ${bold(p.name)}`;
       return [
         nameStr,
@@ -219,19 +304,20 @@ function render() {
 
     // Cards horizontally
     if (hand.length > 0) {
+      handSelector.setItems(hand);
       const maxCards = Math.max(1, Math.floor((cols - 4) / 6));
       let startIdx = 0;
       if (hand.length > maxCards) {
-        startIdx = Math.max(0, Math.min(cursor - Math.floor(maxCards / 2), hand.length - maxCards));
+        startIdx = Math.max(0, Math.min(handSelector.cursor - Math.floor(maxCards / 2), hand.length - maxCards));
       }
       const visibleHand = hand.slice(startIdx, startIdx + maxCards);
-      const playableUids = state.playableUids;
-      const playableSet = playableUids && playableUids.length > 0 ? new Set(playableUids) : null;
+      const playableUids = state.playableUids || [];
+      const playableSet = playableUids.length > 0 ? new Set(playableUids) : null;
       const cardBoxes = visibleHand.map((c: any, vi: number) => {
         const i = vi + startIdx;
-        const isCursor = mode === 'hand' && i === cursor;
-        const isSelected = state.selectedCards.includes(c.uid) || c.uid === selectedCardUid;
-        const isPlayable = !playableSet || playableSet.has(c.uid);
+        const isCursor = (activeSelector === handSelector && i === handSelector.cursor) || c.uid === selectedCardUid;
+        const isSelected = state.selectedCards.includes(c.uid);
+        const isPlayable = playableSet ? playableSet.has(c.uid) : canPlayCard(c);
         return renderCard(c, isCursor, isSelected, isPlayable);
       });
       const scrollHint = hand.length > maxCards ? dim(` [${startIdx + 1}-${startIdx + visibleHand.length}/${hand.length}]`) : '';
@@ -242,13 +328,13 @@ function render() {
         w(pad(line, cols - 1) + '│\n');
       }
       let cursorLine = '│ ';
-      for (let vi = 0; vi < visibleHand.length; vi++) cursorLine += (vi + startIdx === cursor ? ' ▲   ' : '      ');
+      for (let vi = 0; vi < visibleHand.length; vi++) cursorLine += (vi + startIdx === handSelector.cursor ? ' ▲   ' : '      ');
       w(pad(cursorLine, cols - 1) + '│\n');
     }
 
     // Controls
     let controls: string;
-    if (mode === 'target') {
+    if (activeSelector === targetSelector) {
       controls = ' [←→]选择目标  [Enter]确认目标  [Esc]取消';
     } else if (isMyTurn || (waiting?.playerId === state.myId)) {
       controls = ' [←→]选牌 [Enter]出牌 [Space]多选 [q]结束 [Esc]放弃 [h]帮助';
@@ -265,7 +351,7 @@ function render() {
 }
 
 function getHint(state: any, gs: any, waiting: any, isMyTurn: boolean): string {
-  if (mode === 'target') {
+  if (activeSelector === targetSelector) {
     const hand = state.myHand || [];
     const card = hand.find((c: any) => c.uid === selectedCardUid);
     return ` ${yellow('>>')} 选择目标: ${card ? cardName(card.def.id) : '?'} → ?`;
@@ -287,54 +373,29 @@ client.setOnChange((state: any, msg: any) => {
   render();
 });
 
-// Key handling
-function handleKey(key: Buffer) {
-  const s = key.toString();
+// Key handling — buffer escape sequences
+let keyBuf = '';
+let keyTimer: ReturnType<typeof setTimeout> | null = null;
+
+function processKey(s: string) {
   const state = client.state;
 
-  if (s === '\x03') { clear(); process.exit(0); } // Ctrl+C
+  if (s === '\x03') { clear(); process.exit(0); }
 
-  // Navigation: context-dependent
-  if (s === '\x1b[C' || s === '\t') { // Right / Tab
-    if (mode === 'target') { targetCursor++; clampTargetCursor(); }
-    else { cursor++; clampCursor(); }
-    render(); return;
-  }
-  if (s === '\x1b[D' || s === '\x1b[Z') { // Left / Shift-Tab
-    if (mode === 'target') { targetCursor = Math.max(0, targetCursor - 1); }
-    else { cursor = Math.max(0, cursor - 1); }
-    render(); return;
-  }
-  if (s === '\x1b[A') { // Up
-    if (mode === 'target') { targetCursor = Math.max(0, targetCursor - 1); }
-    else { cursor = Math.max(0, cursor - 1); }
-    render(); return;
-  }
-  if (s === '\x1b[B') { // Down
-    if (mode === 'target') { targetCursor++; clampTargetCursor(); }
-    else { cursor++; clampCursor(); }
-    render(); return;
-  }
+  // Update active selector based on screen
+  if (state.screen === 'hero_select') activeSelector = heroSelector;
+  else if (state.screen === 'game' && activeSelector === heroSelector) activeSelector = handSelector;
 
-  if (s === '\x1b') { // Esc only — pass/cancel
-    if (mode === 'target') {
-      mode = 'hand';
-      selectedCardUid = null;
-      render();
-      return;
-    }
-    if (state.screen === 'game') {
-      const gs = state.gameState;
-      const waiting = gs?.waitingFor;
-      if (waiting && waiting.playerId === state.myId && waiting.type !== 'discard') {
-        sendFn({ type: 'respond', cardUid: null });
-      }
-    }
-    return;
-  }
+  // Navigation — delegate to active selector
+  if (s === '\x1b[C' || s === '\t') { activeSelector.next(); render(); return; }
+  if (s === '\x1b[D' || s === '\x1b[Z') { activeSelector.prev(); render(); return; }
+  if (s === '\x1b[A') { activeSelector.prev(); render(); return; }
+  if (s === '\x1b[B') { activeSelector.next(); render(); return; }
+
+  if (s === '\x1b') { activeSelector.cancel(); render(); return; }
 
   if (s === 'q') {
-    if (mode === 'target') { mode = 'hand'; selectedCardUid = null; render(); return; }
+    if (activeSelector === targetSelector) { activeSelector.cancel(); render(); return; }
     if (state.screen === 'game' && client.isMyTurn() && state.gameState?.phase === 'play') {
       sendFn({ type: 'end_play' });
     }
@@ -342,10 +403,10 @@ function handleKey(key: Buffer) {
   }
 
   if (s === 'h' || s === '?') {
-    if (state.screen === 'game') {
+    if (state.screen === 'game' && activeSelector === handSelector) {
       const hand = state.myHand || [];
-      if (mode === 'hand' && cursor < hand.length) {
-        const card = hand[cursor];
+      const card = hand[handSelector.cursor];
+      if (card) {
         const HELP: Record<string, string> = {
           sha: '杀: 对一名角色造成1点伤害，目标可出闪抵消。每回合限1张(诸葛连弩除外)',
           shan: '闪: 被杀时使用，抵消杀的伤害',
@@ -366,92 +427,33 @@ function handleKey(key: Buffer) {
   }
 
   if (s === ' ') {
-    if (mode === 'hand' && state.screen === 'game') {
+    if (activeSelector === handSelector && state.screen === 'game') {
       const hand = state.myHand || [];
-      if (cursor < hand.length) { client.toggleCard(hand[cursor].uid); render(); }
+      const card = hand[handSelector.cursor];
+      if (card) { client.toggleCard(card.uid); render(); }
     }
     return;
   }
 
   if (s === '\r' || s === '\n') {
-    if (state.screen === 'hero_select' && state.heroes) {
-      if (cursor >= 0 && cursor < state.heroes.length) {
-        sendFn({ type: 'select_hero', heroId: state.heroes[cursor].id });
-        cursor = 0;
-        clear(); w(bold('已选择武将\n') + '等待对手...\n');
-      }
-      return;
-    }
     if (state.screen === 'gameover') process.exit(0);
+    // Discard confirm when cursor is past hand
     if (state.screen === 'game') {
-      const hand = state.myHand || [];
       const gs = state.gameState;
       const waiting = gs?.waitingFor;
-
-      // Target selection mode: confirm target
-      if (mode === 'target') {
-        const opponents = gs.players.filter((p: any) => p.id !== state.myId);
-        const target = opponents[targetCursor];
-        if (target && selectedCardUid !== null) {
-          sendFn({ type: 'play_card', cardUid: selectedCardUid, targetId: target.id });
-          mode = 'hand';
-          selectedCardUid = null;
-        }
-        return;
-      }
-
-      if (cursor < hand.length) {
-        const card = hand[cursor];
-        if (waiting && waiting.playerId === state.myId) {
-          if (waiting.type === 'discard') {
-            client.toggleCard(card.uid); render();
-          } else {
-            sendFn({ type: 'respond', cardUid: card.uid });
-          }
-        } else if (client.isMyTurn() && gs.phase === 'play') {
-          const playableUids = state.playableUids;
-          if (playableUids && playableUids.length > 0 && !playableUids.includes(card.uid)) {
-            logLines.push('该牌不可使用');
-            render();
-            return;
-          }
-          if (needsTarget(card.def.id)) {
-            // Enter target selection mode
-            selectedCardUid = card.uid;
-            mode = 'target';
-            targetCursor = 0;
-            render();
-          } else {
-            // No target needed (tao, equipment, wuzhong)
-            sendFn({ type: 'play_card', cardUid: card.uid });
-          }
-        }
-      } else {
-        if (waiting?.type === 'discard' && state.selectedCards.length > 0) {
+      if (waiting?.type === 'discard' && waiting.playerId === state.myId && state.selectedCards.length > 0) {
+        const hand = state.myHand || [];
+        if (handSelector.cursor >= hand.length) {
           sendFn({ type: 'discard_cards', cardUids: state.selectedCards });
           client.clearSelection();
+          return;
         }
       }
     }
+    activeSelector.confirm();
+    render();
     return;
   }
-}
-
-function clampCursor() {
-  const state = client.state;
-  if (state.screen === 'hero_select') {
-    cursor = Math.min(cursor, (state.heroes?.length || 1) - 1);
-  } else if (state.screen === 'game') {
-    const hand = state.myHand || [];
-    cursor = Math.min(cursor, Math.max(0, hand.length - 1));
-  }
-}
-
-function clampTargetCursor() {
-  const gs = client.state.gameState;
-  if (!gs) return;
-  const opponents = gs.players.filter((p: any) => p.id !== client.state.myId);
-  targetCursor = Math.min(targetCursor, Math.max(0, opponents.length - 1));
 }
 
 process.stdout.on('resize', () => { cols = process.stdout.columns; rows = process.stdout.rows; render(); });
@@ -462,7 +464,18 @@ async function main() {
   sendFn({ type: 'join_room', pin: JOIN_PIN, name: NAME });
   process.stdin.setRawMode(true);
   process.stdin.resume();
-  process.stdin.on('data', handleKey);
+  process.stdin.on('data', (data: Buffer) => {
+    const chunk = data.toString();
+    if (keyTimer) { clearTimeout(keyTimer); keyTimer = null; }
+    keyBuf += chunk;
+    // If starts with ESC, wait briefly for rest of escape sequence
+    if (keyBuf === '\x1b') {
+      keyTimer = setTimeout(() => { processKey(keyBuf); keyBuf = ''; }, 20);
+    } else {
+      processKey(keyBuf);
+      keyBuf = '';
+    }
+  });
   render();
 }
 
