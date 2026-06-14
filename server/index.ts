@@ -13,8 +13,8 @@ const config = loadConfig(configFile);
 
 const PORT = Number(process.env.PORT) || config.server.port;
 if (config.server.verbose) process.env.VERBOSE = '1';
-if (config.server.log_dir) process.env.LOG_DIR = config.server.log_dir;
-if (config.server.open_join) setOpenJoin(true);
+if (!process.env.LOG_DIR && config.server.log_dir) process.env.LOG_DIR = config.server.log_dir;
+if (process.env.OPEN_JOIN === '1' || config.server.open_join) setOpenJoin(true);
 
 const CLIENT_DIR = path.join(__dirname, '../client');
 const SHARED_DIR = path.join(__dirname, '../shared');

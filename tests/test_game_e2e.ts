@@ -1,162 +1,102 @@
-import { spawn } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
-import { createWsPlayer } from '../shared/ws-client.ts';
-import { Game } from '../server/game/engine.ts';
+import * as path from 'path';
 
-const SERVER_PORT = 3099;
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-let server: any;
-let serverPin = '';
+const PORT = 3099;
+const LOG_DIR = '/tmp/sanguosha_e2e_test';
+const TIMEOUT = 60000;
 
-async function startServer(): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    server = spawn('node', ['--experimental-transform-types', 'server/index.ts'], { env: { ...process.env, PORT: String(SERVER_PORT) }, stdio: ['pipe', 'pipe', 'pipe'] });
-    server.stdout.on('data', (d: Buffer) => {
-      const match = d.toString().match(/PIN=(\d{4})/);
-      if (match) resolve(match[1]);
+function cleanup() {
+  try { fs.rmSync(LOG_DIR, { recursive: true, force: true }); } catch {}
+  fs.mkdirSync(path.join(LOG_DIR, 'states'), { recursive: true });
+}
+
+function startServer(): Promise<ChildProcess> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('node', ['--experimental-transform-types', 'server/index.ts'], {
+      env: { ...process.env, PORT: String(PORT), LOG_DIR, OPEN_JOIN: '1' },
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+    proc.stdout!.on('data', (d: Buffer) => {
+      if (d.toString().includes('PIN=')) resolve(proc);
+    });
+    proc.stderr!.on('data', () => {});
     setTimeout(() => reject(new Error('server start timeout')), 5000);
   });
 }
 
-function stopServer() { if (server) { server.kill(); server = null; } }
+function startBot(name: string): ChildProcess {
+  return spawn('node', ['--experimental-transform-types', 'bot/ai_bot.ts', '--port', String(PORT), '--join', 'any', '--name', name], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+}
 
 async function main() {
+  cleanup();
   console.log('Starting server...');
-  serverPin = await startServer();
-  console.log('Server started on port', SERVER_PORT, 'PIN:', serverPin);
+  const server = await startServer();
+  console.log(`Server running on port ${PORT}`);
+
+  const bot1 = startBot('Bot1');
+  const bot2 = startBot('Bot2');
+
+  let winner = '';
+  const gameOver = new Promise<string>((resolve) => {
+    for (const bot of [bot1, bot2]) {
+      bot.stdout!.on('data', (d: Buffer) => {
+        const m = d.toString().match(/Game Over! Winner: (.+)/);
+        if (m) resolve(m[1]);
+      });
+    }
+  });
+
+  const timeout = new Promise<string>((_, reject) => setTimeout(() => reject(new Error('Game did not finish within timeout')), TIMEOUT));
 
   try {
-    const p1 = await createWsPlayer('localhost', SERVER_PORT);
-    const p2 = await createWsPlayer('localhost', SERVER_PORT);
-    console.log('Players connected');
+    winner = await Promise.race([gameOver, timeout]);
+    console.log(`Game complete! Winner: ${winner}`);
+  } catch (e: any) {
+    console.error(`FAIL - ${e.message}`);
+    server.kill(); bot1.kill(); bot2.kill();
+    process.exit(1);
+  }
 
-    p1.send({ type: 'join_room', pin: serverPin, name: 'Agent1' });
-    await p1.waitFor('room_joined');
-    p2.send({ type: 'join_room', pin: serverPin, name: 'Agent2' });
-    await p2.waitFor('hero_selection');
+  // Wait for state dump to flush
+  await new Promise(r => setTimeout(r, 500));
+  server.kill(); bot1.kill(); bot2.kill();
 
-    p1.send({ type: 'select_hero', heroId: 'caocao' });
-    p2.send({ type: 'select_hero', heroId: 'guanyu' });
-    await sleep(200);
-    console.log('Heroes selected, game starting...');
+  // Verify replay files
+  const statesDir = path.join(LOG_DIR, 'states');
+  const turnFiles = fs.readdirSync(statesDir).filter(f => f.match(/^turn_\d+\.json$/)).sort();
+  const actionFiles = fs.readdirSync(statesDir).filter(f => f.match(/^actions_turn_\d+\.json$/)).sort();
 
-    let usedSha: Record<string, boolean> = {};
+  let ok = true;
+  if (turnFiles.length < 2) { console.error('FAIL - Not enough turn files:', turnFiles.length); ok = false; }
+  if (actionFiles.length < 1) { console.error('FAIL - No action files'); ok = false; }
 
-    for (let i = 0; i < 300; i++) {
-      await sleep(30);
+  if (ok) {
+    const initial = JSON.parse(fs.readFileSync(path.join(statesDir, 'turn_0.json'), 'utf8'));
+    if (!initial.players || initial.players.length !== 2) { console.error('FAIL - Invalid initial state'); ok = false; }
 
-      for (const p of [p1, p2]) {
-        const msgs = p.drain();
-        // Find latest private_update for this player
-        let myId = '';
-        let hand: any[] = [];
-        for (const m of msgs) {
-          if (m.type === 'private_update') { myId = m.state.myId; hand = m.state.myHand; }
-        }
-        for (const msg of msgs) {
-          if (msg.type === 'game_over') {
-            console.log(`PASS - Full duel completed! Winner: ${msg.winner}`);
-            p1.ws.close(); p2.ws.close(); stopServer();
-            console.log('Server stopped.');
-            verifyReplay();
-            process.exit(0);
-          }
-          if (msg.type === 'game_update' && myId) {
-            const state = msg.state;
-            const opp = state.players.find((x: any) => x.id !== myId);
-            if (!opp) continue;
+    const lastTurn = turnFiles[turnFiles.length - 1];
+    const finalState = JSON.parse(fs.readFileSync(path.join(statesDir, lastTurn), 'utf8'));
+    if (!finalState.winner) { console.error('FAIL - Final state has no winner'); ok = false; }
 
-            if (state.waitingFor && state.waitingFor.playerId === myId) {
-              if (state.waitingFor.type === 'discard') {
-                const uids = hand.slice(0, state.waitingFor.data.count).map((c: any) => c.uid);
-                p.send({ type: 'discard_cards', cardUids: uids });
-              } else if (state.waitingFor.type === 'respond_attack') {
-                const shan = hand.find((c: any) => c.def.id === 'shan');
-                p.send({ type: 'respond', cardUid: shan ? shan.uid : null });
-              } else if (state.waitingFor.type === 'respond_duel' || state.waitingFor.type === 'respond_barbarian') {
-                const sha = hand.find((c: any) => c.def.id === 'sha');
-                p.send({ type: 'respond', cardUid: sha ? sha.uid : null });
-              } else {
-                p.send({ type: 'respond', cardUid: null });
-              }
-            } else if (state.players[state.currentPlayerIdx].id === myId && state.phase === 'play' && !state.waitingFor) {
-              const turnKey = `${myId}_${state.turnNumber}`;
-              // Equip first
-              const equip = hand.find((c: any) => c.def.type === 'equipment');
-              if (equip) { p.send({ type: 'play_card', cardUid: equip.uid }); }
-              // Draw cards
-              else { const wz = hand.find((c: any) => c.def.id === 'wuzhong');
-              if (wz) { p.send({ type: 'play_card', cardUid: wz.uid }); }
-              // Attack
-              else { const sha = !usedSha[turnKey] && hand.find((c: any) => c.def.id === 'sha');
-              const trick = hand.find((c: any) => c.def.id === 'juedou' || c.def.id === 'nanman' || c.def.id === 'wanjian');
-              if (sha) {
-                p.send({ type: 'play_card', cardUid: sha.uid, targetId: opp.id });
-                usedSha[turnKey] = true;
-              } else if (trick) {
-                p.send({ type: 'play_card', cardUid: trick.uid, targetId: opp.id });
-              } else {
-                p.send({ type: 'end_play' });
-              }}}
-            }
-          }
-        }
+    // Verify turn progression
+    const states = turnFiles.map(f => JSON.parse(fs.readFileSync(path.join(statesDir, f), 'utf8')));
+    for (let i = 1; i < states.length; i++) {
+      if (states[i].turnNumber < states[i - 1].turnNumber) {
+        console.error(`FAIL - Turn number went backward at index ${i}`);
+        ok = false; break;
       }
     }
 
-    console.error('FAIL - Game did not complete in 300 iterations');
-    process.exitCode = 1;
-  } catch (e: any) {
-    console.error('FAIL - Exception:', e.message);
-    process.exitCode = 1;
-  } finally {
-    stopServer();
-    console.log('Server stopped.');
+    const totalActions = actionFiles.reduce((sum, f) => sum + JSON.parse(fs.readFileSync(path.join(statesDir, f), 'utf8')).length, 0);
+    console.log(`  ${turnFiles.length} turns, ${totalActions} actions, winner: ${finalState.winner}`);
   }
 
-  // Replay verification: given initial state + all actions → reproduce final state
-  if (process.env.LOG_DIR) {
-    verifyReplay();
-  }
+  if (ok) { console.log('PASS'); process.exit(0); }
+  else { console.error('FAIL'); process.exit(1); }
 }
 
-function verifyReplay() {
-  const logDir = process.env.LOG_DIR;
-  if (!logDir) return;
-  console.log('\nVerifying replay from action history...');
-  const statesDir = logDir + '/states';
-  if (!fs.existsSync(statesDir)) return;
-  const turnFiles = fs.readdirSync(statesDir).filter(f => f.startsWith('turn_')).sort();
-  const actionFiles = fs.readdirSync(statesDir).filter(f => f.startsWith('actions_')).sort();
-  if (turnFiles.length < 2) { console.log('  (not enough turns to verify)'); return; }
-
-  // Load all states and actions
-  const states = turnFiles.map(f => JSON.parse(fs.readFileSync(`${statesDir}/${f}`, 'utf8')));
-  const actionsByTurn = actionFiles.map(f => JSON.parse(fs.readFileSync(`${statesDir}/${f}`, 'utf8')));
-
-  // Verify: basic consistency checks
-  let ok = true;
-  for (let i = 0; i < states.length - 1; i++) {
-    const before = states[i];
-    const after = states[i + 1];
-    const actions = actionsByTurn[i + 1] || [];
-    // Turn number must advance
-    if (after.turnNumber < before.turnNumber) {
-      console.log(`  ✗ Turn number went backward: ${before.turnNumber} → ${after.turnNumber}`);
-      ok = false;
-    }
-    if (actions.length === 0 && before.winner === null) {
-      console.log(`  ✗ Turn ${i + 2} has no actions but game not over`);
-      ok = false;
-    }
-  }
-
-  const totalActions = actionsByTurn.reduce((s, a) => s + a.length, 0);
-  console.log(`  ${turnFiles.length} turns, ${totalActions} total actions`);
-  console.log(`  Actions per turn: [${actionsByTurn.map(a => a.length).join(', ')}]`);
-  if (ok) console.log('  ✓ State transitions consistent with action history');
-  else { console.log('  ✗ Replay verification failed'); process.exitCode = 1; }
-}
-
-main();
+main().catch(e => { console.error('FAIL -', e.message); process.exit(1); });

@@ -105,6 +105,9 @@ function renderCard(card: any, highlighted: boolean, selected: boolean, playable
   const suit = suitChar(card.def.suit);
   const num = card.def.number > 9 ? String(card.def.number) : ' ' + card.def.number;
   const sc = (s: string) => playable ? suitColor(card.def.suit, s) : dim(s);
+  if (highlighted && selected) {
+    return [green('┌────┐'), green(`│${name}${name.length > 1 ? '' : '  '}│`), green(`│${suit}${num} │`), green('└────┘')];
+  }
   if (highlighted) {
     if (!playable) return [dim('┌────┐'), dim(`│${name}${name.length > 1 ? '' : '  '}│`), dim(`│${suit}${num} │`), dim('└────┘')];
     return [bgYellow('┌────┐'), bgYellow(`│${name}${name.length > 1 ? '' : '  '}│`), bgYellow(`│${suit}${num} │`), bgYellow('└────┘')];
@@ -317,7 +320,16 @@ function render() {
         const i = vi + startIdx;
         const isCursor = (activeSelector === handSelector && i === handSelector.cursor) || c.uid === selectedCardUid;
         const isSelected = state.selectedCards.includes(c.uid);
-        const isPlayable = playableSet ? playableSet.has(c.uid) : canPlayCard(c);
+        // During resolution (respond), show respondable cards as playable
+        let isPlayable: boolean;
+        if (waiting && waiting.playerId === state.myId) {
+          if (waiting.type === 'respond_attack') isPlayable = c.def.id === 'shan';
+          else if (waiting.type === 'respond_duel' || waiting.type === 'respond_barbarian') isPlayable = c.def.id === 'sha';
+          else if (waiting.type === 'discard') isPlayable = true;
+          else isPlayable = true;
+        } else {
+          isPlayable = playableSet ? playableSet.has(c.uid) : canPlayCard(c);
+        }
         return renderCard(c, isCursor, isSelected, isPlayable);
       });
       const scrollHint = hand.length > maxCards ? dim(` [${startIdx + 1}-${startIdx + visibleHand.length}/${hand.length}]`) : '';
@@ -394,6 +406,13 @@ function processKey(s: string) {
 
   if (s === '\x1b') { activeSelector.cancel(); render(); return; }
 
+  if (s === 'x') {
+    sendFn({ type: 'abort', reason: 'user_cancel' });
+    logLines.push('已发送取消信号');
+    render();
+    return;
+  }
+
   if (s === 'q') {
     if (activeSelector === targetSelector) { activeSelector.cancel(); render(); return; }
     if (state.screen === 'game' && client.isMyTurn() && state.gameState?.phase === 'play') {
@@ -427,27 +446,33 @@ function processKey(s: string) {
   }
 
   if (s === ' ') {
-    if (activeSelector === handSelector && state.screen === 'game') {
+    if (state.screen === 'game') {
       const hand = state.myHand || [];
       const card = hand[handSelector.cursor];
-      if (card) { client.toggleCard(card.uid); render(); }
+      if (card) { client.toggleCard(card.uid); }
     }
+    render();
     return;
   }
 
   if (s === '\r' || s === '\n') {
     if (state.screen === 'gameover') process.exit(0);
-    // Discard confirm when cursor is past hand
+    // Discard: if enough cards selected, submit
     if (state.screen === 'game') {
       const gs = state.gameState;
       const waiting = gs?.waitingFor;
-      if (waiting?.type === 'discard' && waiting.playerId === state.myId && state.selectedCards.length > 0) {
-        const hand = state.myHand || [];
-        if (handSelector.cursor >= hand.length) {
-          sendFn({ type: 'discard_cards', cardUids: state.selectedCards });
+      if (waiting?.type === 'discard' && waiting.playerId === state.myId) {
+        const needed = waiting.data?.count || 0;
+        if (state.selectedCards.length >= needed) {
+          sendFn({ type: 'discard_cards', cardUids: state.selectedCards.slice(0, needed) });
           client.clearSelection();
           return;
         }
+        // Not enough selected — toggle current card
+        const hand = state.myHand || [];
+        const card = hand[handSelector.cursor];
+        if (card) { client.toggleCard(card.uid); render(); }
+        return;
       }
     }
     activeSelector.confirm();

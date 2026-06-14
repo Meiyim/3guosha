@@ -25,20 +25,26 @@ ws.on('message', (msg: any) => {
   }
 });
 
-client.setOnChange((state: any, msg: any) => {
-  if (state.screen === 'hero_select') {
-    ws.send({ type: 'select_hero', heroId: 'caocao' });
-    console.log('Selected hero: 曹操');
-    return;
-  }
+let actionTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleAction() {
+  if (actionTimer) return;
+  actionTimer = setTimeout(() => {
+    actionTimer = null;
+    doAction();
+  }, 50);
+}
+
+function doAction() {
+  const state = client.state;
   if (state.screen !== 'game' || !state.gameState) return;
 
   const gs = state.gameState;
   const myId = state.myId;
-  const hand = state.myHand;
+  const hand = state.myHand || [];
   const me = gs.players.find((p: any) => p.id === myId);
   const opp = gs.players.find((p: any) => p.id !== myId);
-  if (!opp) return;
+  if (!opp || !me) return;
 
   if (gs.waitingFor && gs.waitingFor.playerId === myId) {
     const w = gs.waitingFor;
@@ -58,7 +64,7 @@ client.setOnChange((state: any, msg: any) => {
   }
 
   const isMyTurn = gs.players[gs.currentPlayerIdx].id === myId;
-  if (!isMyTurn || gs.phase !== 'play') return;
+  if (!isMyTurn || gs.phase !== 'play' || gs.waitingFor) return;
 
   const turnKey = String(gs.turnNumber);
   if (me.hp < me.maxHp) {
@@ -76,6 +82,15 @@ client.setOnChange((state: any, msg: any) => {
   const trick = hand.find((c: any) => c.def.id === 'juedou' || c.def.id === 'nanman' || c.def.id === 'wanjian');
   if (trick) { ws.send({ type: 'play_card', cardUid: trick.uid, targetId: opp.id }); return; }
   ws.send({ type: 'end_play' });
+}
+
+client.setOnChange((state: any, msg: any) => {
+  if (state.screen === 'hero_select') {
+    ws.send({ type: 'select_hero', heroId: 'caocao' });
+    console.log('Selected hero: 曹操');
+    return;
+  }
+  scheduleAction();
 });
 
 async function main() {
