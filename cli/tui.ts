@@ -41,20 +41,57 @@ function canPlayCard(card: any): boolean {
   if (!handler.canPlay) return true;
   const me = client.getMyPlayer();
   if (!me) return true;
+  const player = { ...me, hand: client.state.myHand || [] };
   const fakeCtx = { state: client.state.gameState };
-  return handler.canPlay(fakeCtx, me, card);
+  return handler.canPlay(fakeCtx, player, card);
 }
 
 // ANSI helpers
 const ESC = '\x1b';
-const w = (s: string) => process.stdout.write(s);
-const clear = () => w(`${ESC}[2J${ESC}[H`);
+const RAW = (s: string) => process.stdout.write(s);
+
+// Terminal lifecycle: enter the alternate screen so we don't trash the user's
+// scrollback, hide the cursor while we paint, and guarantee both get reversed
+// on every exit path — normal exit, Ctrl-C, server disconnect, crash.
+let teardownDone = false;
+function setupTerminal() {
+  RAW(`${ESC}[?1049h${ESC}[?25l${ESC}[2J${ESC}[H`);
+}
+function teardownTerminal() {
+  if (teardownDone) return;
+  teardownDone = true;
+  if (process.stdin.isTTY && (process.stdin as any).setRawMode) {
+    try { process.stdin.setRawMode(false); } catch {}
+  }
+  RAW(`${ESC}[?25h${ESC}[?1049l`);
+}
+process.on('exit', teardownTerminal);
+process.on('SIGINT', () => { teardownTerminal(); process.exit(130); });
+process.on('SIGTERM', () => { teardownTerminal(); process.exit(143); });
+process.on('uncaughtException', (e) => {
+  teardownTerminal();
+  console.error(e);
+  process.exit(1);
+});
+
+// Diff renderer: render() collects its output into renderBuf instead of writing
+// straight to the terminal. flush() then compares the new frame against the
+// previous one and rewrites only the lines that changed, so we never do a
+// full-screen erase — that's what eliminates the flicker.
+let renderBuf: string | null = null;
+let prevLines: string[] = [];
+const w = (s: string) => { if (renderBuf !== null) renderBuf += s; else RAW(s); };
+// Hard reset: wipe the screen and forget the previous frame so the next render
+// repaints everything. Used on resize and screen transitions.
+const clear = () => { prevLines = []; RAW(`${ESC}[2J${ESC}[H`); };
 const bold = (s: string) => `${ESC}[1m${s}${ESC}[0m`;
 const dim = (s: string) => `${ESC}[2m${s}${ESC}[0m`;
 const red = (s: string) => `${ESC}[31m${s}${ESC}[0m`;
 const green = (s: string) => `${ESC}[32m${s}${ESC}[0m`;
 const yellow = (s: string) => `${ESC}[33m${s}${ESC}[0m`;
+const blue = (s: string) => `${ESC}[34m${s}${ESC}[0m`;
 const cyan = (s: string) => `${ESC}[36m${s}${ESC}[0m`;
+const grey = (s: string) => `${ESC}[90m${s}${ESC}[0m`;
 const invert = (s: string) => `${ESC}[7m${s}${ESC}[0m`;
 const bgYellow = (s: string) => `${ESC}[43m${ESC}[30m${s}${ESC}[0m`;
 
@@ -97,6 +134,74 @@ function visLen(s: string): number {
     else { len += 1; }
   }
   return len;
+}
+
+// Card names that may appear in server log strings (Chinese form). Used by
+// the colorizer to highlight card/skill mentions.
+const CARD_KEYWORDS = ['杀','闪','桃','决斗','南蛮入侵','南蛮','万箭齐发','万箭','无中生有','无中','诸葛连弩','连弩','+1马','-1马'];
+const SKILL_KEYWORDS = ['奸雄','武圣','制衡','洛神','仁德'];
+
+// Highlight known tokens inside a log line: player names blue, cards/skills
+// yellow. Player names come from current game state so any future renames
+// follow automatically. Tokens are matched longest-first so '南蛮入侵'
+// wins over '南蛮'.
+function highlightTokens(text: string, playerNames: string[]): string {
+  const tokens = [
+    ...playerNames.map(n => ({ token: n, color: blue })),
+    ...[...CARD_KEYWORDS].sort((a, b) => b.length - a.length).map(t => ({ token: t, color: yellow })),
+    ...SKILL_KEYWORDS.map(t => ({ token: t, color: yellow })),
+  ].filter(t => t.token.length > 0);
+
+  let out = '';
+  let i = 0;
+  outer: while (i < text.length) {
+    for (const { token, color } of tokens) {
+      if (text.startsWith(token, i)) { out += color(token); i += token.length; continue outer; }
+    }
+    out += text[i];
+    i++;
+  }
+  return out;
+}
+
+// A single log line, fully colorized. Turn-start lines get the red banner
+// treatment; everything else is grey-by-default with token highlights.
+function colorizeLog(text: string, playerNames: string[]): string {
+  if (/回合开始/.test(text) || /^第\d+回合/.test(text)) {
+    return red(`--- ${highlightTokens(text, playerNames)} ---`);
+  }
+  if (/阵亡|获胜/.test(text)) {
+    return red(highlightTokens(text, playerNames));
+  }
+  if (text.startsWith('✓')) return green(text);
+  if (text.startsWith('✗')) return red(text);
+  // Default: grey body, with player/card/skill tokens overpainted in their
+  // own color (their inner reset terminates the grey; the next plain run
+  // is left uncolored, which reads as default fg — close enough to grey
+  // without nesting issues).
+  return grey(highlightTokens(text, playerNames));
+}
+
+// Word-wrap a plain log line to a visible width (CJK-aware), then colorize
+// each row. Returns ready-to-print colored strings.
+function wrapColoredLog(plain: string, playerNames: string[], width: number): string[] {
+  if (width <= 0) return [];
+  const lines: string[] = [];
+  let cur = '';
+  let curWidth = 0;
+  for (const ch of plain) {
+    const cw = visLen(ch);
+    if (curWidth + cw > width && cur.length > 0) {
+      lines.push(colorizeLog(cur, playerNames));
+      cur = ch;
+      curWidth = cw;
+    } else {
+      cur += ch;
+      curWidth += cw;
+    }
+  }
+  if (cur.length > 0) lines.push(colorizeLog(cur, playerNames));
+  return lines;
 }
 
 // Render card box (3 lines: top/content/bottom, 6 cols wide)
@@ -148,7 +253,7 @@ function connectWs(): Promise<void> {
           try { client.handleMessage(JSON.parse(p)); } catch {}
         }
       });
-      socket.on('close', () => { clear(); w('断开连接\n'); process.exit(1); });
+      socket.on('close', () => { teardownTerminal(); console.log('断开连接'); process.exit(1); });
       resolve();
     });
     req.on('error', reject);
@@ -174,10 +279,10 @@ const handSelector = new Selector<any>({
     } else if (client.isMyTurn() && gs.phase === 'play') {
       const playableUids = state.playableUids || [];
       if (playableUids.length > 0 && !playableUids.includes(card.uid)) {
-        logLines.push('该牌不可使用'); render(); return;
+        pushLog('该牌不可使用'); render(); return;
       }
       if (playableUids.length === 0 && !canPlayCard(card)) {
-        logLines.push('该牌不可使用'); render(); return;
+        pushLog('该牌不可使用'); render(); return;
       }
       if (needsTarget(card.def.id)) {
         selectedCardUid = card.uid;
@@ -230,15 +335,50 @@ const heroSelector = new Selector<any>({
 
 let activeSelector: Selector<any> = heroSelector;
 
+// Bounded log ring. We keep a few hundred lines; the visible window inside
+// the log box is computed at render time from terminal height. Values older
+// than the cap roll off the front so memory stays flat on long games.
+const LOG_CAP = 500;
 const logLines: string[] = [];
+function pushLog(line: string) {
+  logLines.push(line);
+  if (logLines.length > LOG_CAP) logLines.splice(0, logLines.length - LOG_CAP);
+}
 
 function render() {
+  // Errors must bypass the diff buffer — process.exit fires before flush would.
   const state = client.state;
-  clear();
+  if (state.error) { teardownTerminal(); console.error(`❌ ${state.error}`); process.exit(1); }
+  renderBuf = '';
+  renderInner();
+  const buf = renderBuf;
+  renderBuf = null;
+  flush(buf.split('\n'));
+}
+
+// Compare the new frame line-by-line against prevLines and emit only changes.
+function flush(rawLines: string[]) {
+  // Drop the trailing empty element produced by a final '\n'.
+  const lines = rawLines.length > 1 && rawLines[rawLines.length - 1] === ''
+    ? rawLines.slice(0, -1) : rawLines;
+  let out = `${ESC}[?25l`; // hide cursor while we repaint
+  const n = Math.max(lines.length, prevLines.length);
+  for (let i = 0; i < n; i++) {
+    const next = lines[i] ?? '';
+    if (next === prevLines[i]) continue; // unchanged — leave it alone
+    out += `${ESC}[${i + 1};1H${ESC}[2K${next}`; // move to row, clear, rewrite
+  }
+  // Park cursor just below the frame so stray output lands sensibly.
+  out += `${ESC}[${lines.length + 1};1H${ESC}[?25h`;
+  prevLines = lines;
+  RAW(out);
+}
+
+function renderInner() {
+  const state = client.state;
   cols = process.stdout.columns || 80;
   rows = process.stdout.rows || 24;
 
-  if (state.error) { w(red(`❌ ${state.error}\n`)); process.exit(1); }
   if (state.screen === 'lobby') { w(bold('三国杀 Online\n') + '连接中...\n'); return; }
   if (state.screen === 'waiting') { w(bold('三国杀 Online\n\n') + `等待对手... PIN: ${bold(state.pin||'')}\n`); return; }
 
@@ -356,9 +496,33 @@ function render() {
     w('│' + pad(controls, cols - 2) + '│\n');
     w('└' + hline(cols - 2) + '┘\n');
 
-    // Recent logs
-    const recent = logLines.slice(-2);
-    for (const l of recent) w(dim(`  📜 ${l}`) + '\n');
+    // === ZONE 4: LOG BOX (auto-fills remaining height) ===
+    // Measure chrome already written so we can size the log area to whatever
+    // rows remain. Reserve at least 3 rows (top border + 1 line + bottom).
+    const chromeLines = (renderBuf || '').split('\n').length - 1;
+    const logBoxRows = Math.max(3, rows - chromeLines - 1);
+    const innerRows = logBoxRows - 2;
+    const innerWidth = cols - 4; // borders + 1 cell padding each side
+
+    const playerNames = (gs.players || []).map((p: any) => p.name).filter((n: string) => !!n);
+    // Wrap every buffered log line, then take the most recent rows that fit.
+    // This is the "rotate when full" behavior — oldest wrapped rows scroll
+    // out the top while newest land at the bottom.
+    const wrapped: string[] = [];
+    for (const raw of logLines) {
+      for (const row of wrapColoredLog(raw, playerNames, innerWidth)) wrapped.push(row);
+    }
+    const visibleLog = wrapped.slice(-innerRows);
+    const titleRaw = ' 战报 ';
+    const titleVis = visLen(titleRaw);
+    const leftDash = 2;
+    const rightDash = Math.max(1, cols - 2 - leftDash - titleVis);
+    w('┌' + hline(leftDash) + bold(titleRaw) + hline(rightDash) + '┐\n');
+    for (let i = 0; i < innerRows; i++) {
+      const line = visibleLog[i] ?? '';
+      w('│ ' + pad(line, innerWidth) + ' │\n');
+    }
+    w('└' + hline(cols - 2) + '┘\n');
   }
 }
 
@@ -381,7 +545,7 @@ function getHint(state: any, gs: any, waiting: any, isMyTurn: boolean): string {
 }
 
 client.setOnChange((state: any, msg: any) => {
-  if (msg?.type === 'log') logLines.push(msg.msg);
+  if (msg?.type === 'log') pushLog(msg.msg);
   render();
 });
 
@@ -392,23 +556,25 @@ let keyTimer: ReturnType<typeof setTimeout> | null = null;
 function processKey(s: string) {
   const state = client.state;
 
-  if (s === '\x03') { clear(); process.exit(0); }
+  if (s === '\x03') { process.exit(0); }
 
   // Update active selector based on screen
   if (state.screen === 'hero_select') activeSelector = heroSelector;
   else if (state.screen === 'game' && activeSelector === heroSelector) activeSelector = handSelector;
 
-  // Navigation — delegate to active selector
-  if (s === '\x1b[C' || s === '\t') { activeSelector.next(); render(); return; }
-  if (s === '\x1b[D' || s === '\x1b[Z') { activeSelector.prev(); render(); return; }
-  if (s === '\x1b[A') { activeSelector.prev(); render(); return; }
-  if (s === '\x1b[B') { activeSelector.next(); render(); return; }
+  // Navigation — delegate to active selector. Both CSI (\x1b[A) and SS3
+  // (\x1bOA) are accepted because terminals in application-cursor-key mode
+  // emit the SS3 form.
+  if (s === '\x1b[C' || s === '\x1bOC' || s === '\t') { activeSelector.next(); render(); return; }
+  if (s === '\x1b[D' || s === '\x1bOD' || s === '\x1b[Z') { activeSelector.prev(); render(); return; }
+  if (s === '\x1b[A' || s === '\x1bOA') { activeSelector.prev(); render(); return; }
+  if (s === '\x1b[B' || s === '\x1bOB') { activeSelector.next(); render(); return; }
 
   if (s === '\x1b') { activeSelector.cancel(); render(); return; }
 
   if (s === 'x') {
     sendFn({ type: 'abort', reason: 'user_cancel' });
-    logLines.push('已发送取消信号');
+    pushLog('已发送取消信号');
     render();
     return;
   }
@@ -438,7 +604,7 @@ function processKey(s: string) {
           plus_horse: '+1马: 防御马，他人到你距离+1',
           minus_horse: '-1马: 进攻马，你到他人距离-1',
         };
-        logLines.push(HELP[card.def.id] || `${card.def.nameCn}: 无详细说明`);
+        pushLog(HELP[card.def.id] || `${card.def.nameCn}: 无详细说明`);
         render();
       }
     }
@@ -481,27 +647,73 @@ function processKey(s: string) {
   }
 }
 
-process.stdout.on('resize', () => { cols = process.stdout.columns; rows = process.stdout.rows; render(); });
+process.stdout.on('resize', () => {
+  cols = process.stdout.columns;
+  rows = process.stdout.rows;
+  // Geometry changed — every cached line is stale; force a full repaint.
+  prevLines = [];
+  RAW(`${ESC}[2J${ESC}[H`);
+  render();
+});
+
+// Pull complete key sequences out of keyBuf and dispatch each one. A bare
+// ESC at the end is left in the buffer so the timer can flush it (or wait
+// for the rest of an arriving CSI/SS3 sequence).
+function drainKeys() {
+  while (keyBuf.length > 0) {
+    const c = keyBuf[0];
+    if (c !== '\x1b') {
+      processKey(c);
+      keyBuf = keyBuf.slice(1);
+      continue;
+    }
+    if (keyBuf.length === 1) return; // bare ESC — wait for the timer or more bytes
+    const second = keyBuf[1];
+    if (second === '[') {
+      // CSI: \x1b[ params? final  where final ∈ 0x40..0x7E
+      const m = keyBuf.match(/^\x1b\[[\x30-\x3f]*[\x20-\x2f]*([\x40-\x7e])/);
+      if (!m) return; // not yet complete
+      processKey(m[0]);
+      keyBuf = keyBuf.slice(m[0].length);
+      continue;
+    }
+    if (second === 'O') {
+      // SS3: \x1bO X (3 bytes total)
+      if (keyBuf.length < 3) return;
+      processKey(keyBuf.slice(0, 3));
+      keyBuf = keyBuf.slice(3);
+      continue;
+    }
+    // ESC followed by some other byte (Alt-key, etc.) — emit just the ESC,
+    // let the next loop iteration handle the rest as a normal byte.
+    processKey('\x1b');
+    keyBuf = keyBuf.slice(1);
+  }
+}
 
 async function main() {
   if (!JOIN_PIN) { console.error('Usage: cli/tui.ts --join <PIN> [--port PORT] [--name NAME]'); process.exit(1); }
+  setupTerminal();
   await connectWs();
   sendFn({ type: 'join_room', pin: JOIN_PIN, name: NAME });
   process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.on('data', (data: Buffer) => {
-    const chunk = data.toString();
     if (keyTimer) { clearTimeout(keyTimer); keyTimer = null; }
-    keyBuf += chunk;
-    // If starts with ESC, wait briefly for rest of escape sequence
-    if (keyBuf === '\x1b') {
-      keyTimer = setTimeout(() => { processKey(keyBuf); keyBuf = ''; }, 20);
-    } else {
-      processKey(keyBuf);
-      keyBuf = '';
+    keyBuf += data.toString();
+    drainKeys();
+    // If anything is still buffered, it's a partial ESC sequence. Arm a
+    // short timer: if no more bytes arrive, flush it as a literal ESC.
+    if (keyBuf.length > 0) {
+      keyTimer = setTimeout(() => {
+        while (keyBuf.length > 0) {
+          processKey(keyBuf[0]);
+          keyBuf = keyBuf.slice(1);
+        }
+      }, 30);
     }
   });
   render();
 }
 
-main().catch(e => { w(red(`Error: ${e.message}\n`)); process.exit(1); });
+main().catch(e => { teardownTerminal(); console.error(`Error: ${e.message}`); process.exit(1); });
