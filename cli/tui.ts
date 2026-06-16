@@ -345,7 +345,26 @@ function pushLog(line: string) {
   if (logLines.length > LOG_CAP) logLines.splice(0, logLines.length - LOG_CAP);
 }
 
-function render() {
+// Game clock: starts the first time we see a game state. Stops on game over
+// so the status line freezes at the final duration instead of running forever.
+let gameStartedAt: number | null = null;
+let gameStoppedAt: number | null = null;
+function fmtElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad2 = (n: number) => n.toString().padStart(2, '0');
+  return h > 0 ? `${h}:${pad2(m)}:${pad2(s)}` : `${pad2(m)}:${pad2(s)}`;
+}
+// Drive a 1Hz repaint while the game is live so the elapsed clock advances
+// even when there's no incoming server message. We re-render only — the
+// diff flusher means unchanged lines aren't rewritten.
+const clockTimer = setInterval(() => {
+  if (gameStartedAt && !gameStoppedAt && client.state?.screen === 'game') render();
+}, 1000);
+clockTimer.unref?.();
+
   // Errors must bypass the diff buffer — process.exit fires before flush would.
   const state = client.state;
   if (state.error) { teardownTerminal(); console.error(`❌ ${state.error}`); process.exit(1); }
@@ -393,7 +412,12 @@ function renderInner() {
     return;
   }
 
-  if (state.screen === 'gameover') { w(bold(`\n🏆 ${state.winner} 获胜!\n\n`) + '按任意键退出\n'); return; }
+  if (state.screen === 'gameover') {
+    if (gameStartedAt && !gameStoppedAt) gameStoppedAt = Date.now();
+    const dur = gameStartedAt ? fmtElapsed((gameStoppedAt ?? Date.now()) - gameStartedAt) : '0:00';
+    w(bold(`\n🏆 ${state.winner} 获胜!\n\n`) + dim(`用时 ${dur}\n\n`) + '按任意键退出\n');
+    return;
+  }
 
   if (state.screen === 'game') {
     const gs = state.gameState;
@@ -406,8 +430,10 @@ function renderInner() {
     const waiting = gs.waitingFor;
 
     // === ZONE 1: STATUS ===
+    if (gameStartedAt === null) gameStartedAt = Date.now();
+    const elapsedMs = (gameStoppedAt ?? Date.now()) - gameStartedAt;
     const statusLines = [
-      ` ${bold(`第${gs.turnNumber}回合`)}  │  ${cyan(phaseName(gs.phase))}  │  牌堆: ${gs.deckCount}  │  弃牌堆: ${68 - gs.deckCount - hand.length}`,
+      ` ${bold(`第${gs.turnNumber}回合`)}  │  ${cyan(phaseName(gs.phase))}  │  ⏱ ${cyan(fmtElapsed(elapsedMs))}  │  牌堆: ${gs.deckCount}  │  弃牌堆: ${68 - gs.deckCount - hand.length}`,
       getHint(state, gs, waiting, isMyTurn),
     ];
     for (const l of box(statusLines, cols - 1)) w(l + '\n');
