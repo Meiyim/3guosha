@@ -109,7 +109,7 @@ export class Game implements GameContext {
 
   getPlayableUids(player: PlayerState): number[] {
     if (this.state.phase !== 'play' || this.currentPlayer.id !== player.id) return [];
-    if (this.waitingFor) return [];
+    if (this.waitingFor && this.waitingFor.playerId === player.id) return [];
     return player.hand.filter(c => {
       const handler = getCardHandler(c.def.id);
       if (!handler) return false;
