@@ -18,7 +18,7 @@ async function main() {
   let server: any;
   try {
     console.log('1. Starting server...');
-    server = spawn('node', ['--experimental-transform-types', 'server/index.ts'], { env: { ...process.env, PORT: String(PORT) }, stdio: ['pipe', 'pipe', 'pipe'] });
+    server = spawn('tsx', ['server/index.ts'], { env: { ...process.env, PORT: String(PORT) }, stdio: ['pipe', 'pipe', 'pipe'] });
     await new Promise<void>((resolve, reject) => {
       server.stdout.on('data', (d: Buffer) => { if (d.toString().includes('running')) resolve(); });
       setTimeout(() => reject(new Error('server start timeout')), 5000);

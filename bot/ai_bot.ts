@@ -1,6 +1,7 @@
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { createGameClient } = require('../shared/game-client.cjs');
+import { chooseHeuristicAction } from '../server/arena/agents/index.ts';
 import { WsClient } from '../shared/ws-client.ts';
 
 const args = process.argv.slice(2);
@@ -15,7 +16,6 @@ const JOIN_PIN = getArg('--join', '');
 
 const client = createGameClient();
 const ws = new WsClient();
-let usedShaThisTurn: Record<string, boolean> = {};
 
 ws.on('message', (msg: any) => {
   client.handleMessage(msg);
@@ -41,47 +41,26 @@ function doAction() {
 
   const gs = state.gameState;
   const myId = state.myId;
-  const hand = state.myHand || [];
-  const me = gs.players.find((p: any) => p.id === myId);
-  const opp = gs.players.find((p: any) => p.id !== myId);
-  if (!opp || !me) return;
+  if (!myId) return;
+  const action = chooseHeuristicAction({
+    publicState: gs,
+    privateState: {
+      myId,
+      myHand: state.myHand || [],
+      playableUids: state.playableUids || [],
+      legalActions: state.legalActions || [],
+    },
+    legalActions: state.legalActions || [],
+  });
+  if (action) ws.send(toClientCommand(action));
+}
 
-  if (gs.waitingFor && gs.waitingFor.playerId === myId) {
-    const w = gs.waitingFor;
-    if (w.type === 'discard') {
-      const uids = hand.slice(0, w.data.count).map((c: any) => c.uid);
-      ws.send({ type: 'discard_cards', cardUids: uids });
-    } else if (w.type === 'respond_attack') {
-      const shan = hand.find((c: any) => c.def.id === 'shan');
-      ws.send({ type: 'respond', cardUid: shan ? shan.uid : null });
-    } else if (w.type === 'respond_duel' || w.type === 'respond_barbarian') {
-      const sha = hand.find((c: any) => c.def.id === 'sha');
-      ws.send({ type: 'respond', cardUid: sha ? sha.uid : null });
-    } else {
-      ws.send({ type: 'respond', cardUid: null });
-    }
-    return;
-  }
-
-  const isMyTurn = gs.players[gs.currentPlayerIdx].id === myId;
-  if (!isMyTurn || gs.phase !== 'play' || gs.waitingFor) return;
-
-  const turnKey = String(gs.turnNumber);
-  if (me.hp < me.maxHp) {
-    const tao = hand.find((c: any) => c.def.id === 'tao');
-    if (tao) { ws.send({ type: 'play_card', cardUid: tao.uid }); return; }
-  }
-  const eq = hand.find((c: any) => c.def.type === 'equipment');
-  if (eq) { ws.send({ type: 'play_card', cardUid: eq.uid }); return; }
-  const wz = hand.find((c: any) => c.def.id === 'wuzhong');
-  if (wz) { ws.send({ type: 'play_card', cardUid: wz.uid }); return; }
-  if (!usedShaThisTurn[turnKey]) {
-    const sha = hand.find((c: any) => c.def.id === 'sha');
-    if (sha) { ws.send({ type: 'play_card', cardUid: sha.uid, targetId: opp.id }); usedShaThisTurn[turnKey] = true; return; }
-  }
-  const trick = hand.find((c: any) => c.def.id === 'juedou' || c.def.id === 'nanman' || c.def.id === 'wanjian');
-  if (trick) { ws.send({ type: 'play_card', cardUid: trick.uid, targetId: opp.id }); return; }
-  ws.send({ type: 'end_play' });
+function toClientCommand(action: any) {
+  if (action.type === 'play_card') return { type: 'play_card', cardUid: action.cardUid, targetId: action.targetId, targetIds: action.targetIds };
+  if (action.type === 'respond') return { type: 'respond', cardUid: action.cardUid };
+  if (action.type === 'discard_cards') return { type: 'discard_cards', cardUids: action.cardUids };
+  if (action.type === 'zhiheng') return { type: 'zhiheng', cardUids: action.cardUids };
+  return { type: action.type };
 }
 
 client.setOnChange((state: any, msg: any) => {

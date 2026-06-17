@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { MinimalWebSocketServer } from './ws.ts';
-import { handleConnection, initRoom, setOpenJoin } from './room.ts';
+import { addDevBot, connectHttpClient, getCurrentPin, handleConnection, handleHttpAction, initRoom, leaveGame, pollHttpClient, setOpenJoin, startDevGame } from './room.ts';
 import { log } from './logger.ts';
 import { loadConfig } from './config.ts';
 
@@ -96,7 +96,64 @@ a{color:#4fc3f7;}</style></head><body>
 <p><a href="/">← 返回游戏</a></p>
 </body></html>`;
 
+function readJson(req: http.IncomingMessage): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try { resolve(body ? JSON.parse(body) : {}); } catch (e) { reject(e); }
+    });
+    req.on('error', reject);
+  });
+}
+
+function sendJson(res: http.ServerResponse, status: number, data: any) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(data));
+}
+
 const server = http.createServer((req, res) => {
+  if (req.url === '/api/action' && req.method === 'POST') {
+    readJson(req).then(msg => {
+      if (msg.type === 'connect') {
+        sendJson(res, 200, connectHttpClient());
+        return;
+      }
+      if (!msg.token) {
+        sendJson(res, 400, { error: 'missing token' });
+        return;
+      }
+      if (msg.type === 'create_room') {
+        handleHttpAction(msg.token, { type: 'join_room', pin: getCurrentPin(), name: msg.name });
+        sendJson(res, 200, { ok: true, pin: getCurrentPin() });
+        return;
+      }
+      if (msg.type === 'add_dev_bot') {
+        sendJson(res, 200, { ok: addDevBot() });
+        return;
+      }
+      if (msg.type === 'start_dev_game') {
+        sendJson(res, 200, { ok: startDevGame(msg.token, msg.name, msg.playerCount, msg.agent) });
+        return;
+      }
+      if (msg.type === 'leave_game') {
+        sendJson(res, 200, { ok: leaveGame(msg.token) });
+        return;
+      }
+      const ok = handleHttpAction(msg.token, msg);
+      sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'invalid token' });
+    }).catch(() => sendJson(res, 400, { error: 'invalid json' }));
+    return;
+  }
+
+  if (req.url?.startsWith('/api/poll') && req.method === 'GET') {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const token = url.searchParams.get('token') || '';
+    const messages = pollHttpClient(token);
+    sendJson(res, messages ? 200 : 404, messages ? { messages } : { error: 'invalid token' });
+    return;
+  }
+
   if (req.url === '/api/manual' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(MANUAL_HTML);

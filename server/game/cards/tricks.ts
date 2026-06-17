@@ -8,7 +8,7 @@ const juedouHandler: CardHandler = {
     if (!target || !target.alive || target.id === player.id) return null;
     ctx.useCard(player, cardIdx);
     ctx.log(`${player.name} 对 ${target.name} 使用了决斗`);
-    ctx.setWaiting({ playerId: target.id, type: WaitingType.RESPOND_DUEL, data: { opponent: player.id, source: player.id } });
+    ctx.setWaiting({ playerId: target.id, type: WaitingType.RESPOND_DUEL, data: { opponent: player.id, source: player.id, card } });
     return ctx.waitingFor;
   }
 };
@@ -20,7 +20,7 @@ const nanmanHandler: CardHandler = {
     ctx.log(`${player.name} 使用了南蛮入侵`);
     const targets = ctx.state.players.filter(p => p.id !== player.id && p.alive).map(p => p.id);
     if (targets.length === 0) return null;
-    ctx.setWaiting({ playerId: targets[0], type: WaitingType.RESPOND_BARBARIAN, data: { source: player.id, remaining: targets.slice(1) } });
+    ctx.setWaiting({ playerId: targets[0], type: WaitingType.RESPOND_BARBARIAN, data: { source: player.id, card, remaining: targets.slice(1) } });
     return ctx.waitingFor;
   }
 };
@@ -32,7 +32,7 @@ const wanjianHandler: CardHandler = {
     ctx.log(`${player.name} 使用了万箭齐发`);
     const targets = ctx.state.players.filter(p => p.id !== player.id && p.alive).map(p => p.id);
     if (targets.length === 0) return null;
-    ctx.setWaiting({ playerId: targets[0], type: WaitingType.RESPOND_BARBARIAN, data: { source: player.id, remaining: targets.slice(1), needShan: true } });
+    ctx.setWaiting({ playerId: targets[0], type: WaitingType.RESPOND_BARBARIAN, data: { source: player.id, card, remaining: targets.slice(1), needShan: true } });
     return ctx.waitingFor;
   }
 };

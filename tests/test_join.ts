@@ -15,7 +15,7 @@ function test(name: string, ok: boolean, detail?: string) {
 
 async function startServer(): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    server = spawn('node', ['--experimental-transform-types', 'server/index.ts'], { env: { ...process.env, PORT: String(PORT) }, stdio: ['pipe', 'pipe', 'pipe'] });
+    server = spawn('tsx', ['server/index.ts'], { env: { ...process.env, PORT: String(PORT) }, stdio: ['pipe', 'pipe', 'pipe'] });
     server.stdout.on('data', (d: Buffer) => {
       const s = d.toString();
       const match = s.match(/PIN=(\d{4})/);

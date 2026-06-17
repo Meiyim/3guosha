@@ -44,6 +44,7 @@ export enum WaitingType {
   RESPOND_ATTACK = 'respond_attack',
   RESPOND_DUEL = 'respond_duel',
   RESPOND_BARBARIAN = 'respond_barbarian',
+  RESPOND_RESCUE = 'respond_rescue',
   RESPOND_WUXIE = 'respond_wuxie',
   DISCARD = 'discard',
 }
@@ -52,6 +53,7 @@ export enum ResolverType {
   ATTACK = 'attack',
   DUEL = 'duel',
   BARBARIAN = 'barbarian',
+  RESCUE = 'rescue',
   WUXIE = 'wuxie',
   DISCARD = 'discard',
 }
@@ -74,6 +76,19 @@ export interface WaitingAction {
   playerId: string;
   type: WaitingType;
   data?: any;
+}
+
+export type LegalAction =
+  | { type: 'play_card'; cardUid: number; cardId: string; targetId?: string; targetIds?: string[] }
+  | { type: 'respond'; cardUid: number | null; cardId?: string }
+  | { type: 'discard_cards'; cardUids: number[] }
+  | { type: 'end_play' }
+  | { type: 'zhiheng'; cardUids: number[] };
+
+export interface PlayerObservation {
+  publicState: PublicGameState;
+  privateState: PrivateGameState;
+  legalActions: LegalAction[];
 }
 
 export interface GameState {
@@ -111,6 +126,7 @@ export interface PrivateGameState {
   myId: string;
   myHand: CardInstance[];
   playableUids: number[];
+  legalActions: LegalAction[];
 }
 
 export enum ServerMsgType {
@@ -149,10 +165,12 @@ export interface GameContext {
   state: GameState;
   readonly waitingFor: WaitingAction | null;
   drawCards(player: PlayerState, count: number): CardInstance[];
-  dealDamage(target: PlayerState, amount: number, sourceId?: string): void;
+  dealDamage(target: PlayerState, amount: number, sourceId?: string, data?: { card?: CardInstance; afterRescue?: WaitingAction }): void;
   useCard(player: PlayerState, cardIdx: number): void;
   getPlayer(id: string): PlayerState | undefined;
   getOpponent(player: PlayerState): PlayerState | undefined;
+  getDistance(from: PlayerState, to: PlayerState): number;
+  canUseShaOn(from: PlayerState, to: PlayerState): boolean;
   setWaiting(action: WaitingAction): void;
   log(msg: string): void;
   hasSkill(player: PlayerState, skillId: string): boolean;

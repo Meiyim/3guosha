@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>三国杀 Online</title>
-<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style.css?v=21">
 </head>
 <body>
 <div id="app">
@@ -25,6 +25,7 @@
     <h2>等待对手加入...</h2>
     <p>房间PIN: <span id="room-pin" class="pin-display"></span></p>
     <p>将此PIN分享给你的对手</p>
+    <button id="btn-dev-bot" class="dev-bot-btn">加入开发对手</button>
   </div>
 
   <!-- Hero Selection -->
@@ -39,13 +40,16 @@
     <div id="game-info">
       <div id="deck-info"></div>
       <div id="phase-info"></div>
+      <button id="btn-leave-game" class="table-control-btn" title="退出当前游戏">退出</button>
     </div>
     <div id="action-area">
       <div id="game-log"></div>
-      <div id="action-buttons"></div>
     </div>
     <div id="my-area">
-      <div id="my-info"></div>
+      <div id="my-command-row">
+        <div id="my-info"></div>
+        <div id="action-buttons"></div>
+      </div>
       <div id="my-hand"></div>
     </div>
   </div>
@@ -56,7 +60,7 @@
     <button onclick="location.reload()">再来一局</button>
   </div>
 </div>
-<script src="/shared/game-client.js"></script>
-<script src="js/app.js?v=4"></script>
+<script src="/shared/game-client.js?v=21"></script>
+<script src="js/app.js?v=21"></script>
 </body>
 </html>
