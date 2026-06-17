@@ -19,23 +19,23 @@ npm run test:unit          # game engine logic
 npm run test:e2e           # 2 AI agents play a full game with replay verification
 
 # Run any .ts file directly
-node --experimental-transform-types <file.ts>
+tsx <file.ts>
 
 # TUI client (connect to running server or mock)
-node --experimental-transform-types cli/tui.ts --port 8331 --join any --name "Player"
+tsx cli/tui.ts --port 8331 --join any --name "Player"
 
 # Mock server for TUI testing (no game rules, random cards)
-node --experimental-transform-types tests/mock_server.ts --port 9999
+tsx tests/mock_server.ts --port 9999
 
 # Replay inspector
-node --experimental-transform-types scripts/inspect.ts logs/states/
+tsx scripts/inspect.ts logs/states/
 ```
 
 ## Critical Constraints
 
-- **WebSocket only.** No HTTP polling. All clients (browser, CLI, bot, tests) use WebSocket exclusively.
+- Browser client uses HTTP polling. CLI, bot, and tests can still use WebSocket.
 - **No npm ws.** WebSocket is implemented from scratch in `server/ws.ts`.
-- **`--experimental-transform-types` required** (not `--strip-types`) because the codebase uses TypeScript enums.
+- Use `tsx` for direct TypeScript execution in scripts and tests.
 - `shared/game-client.js` is UMD. The `.cjs` copy exists for Node `require()` since package.json has `"type": "module"`.
 
 ## Architecture

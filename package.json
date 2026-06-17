@@ -4,16 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --experimental-transform-types server/index.ts",
-    "build": "npx tsc --noEmit",
-    "test": "node --experimental-transform-types tests/test.ts && node --experimental-transform-types tests/test_join.ts && node --experimental-transform-types tests/test_game_e2e.ts",
-    "test:unit": "node --experimental-transform-types tests/test.ts",
-    "test:e2e": "node --experimental-transform-types tests/test_game_e2e.ts",
-    "test:browser": "node --experimental-transform-types tests/test_browser_sim.ts",
-    "typecheck": "npx tsc --noEmit"
+    "start": "tsx server/index.ts",
+    "build": "tsc --noEmit",
+    "test": "tsx tests/test.ts && tsx tests/test_join.ts && tsx tests/test_http_smoke.ts && tsx tests/test_game_e2e.ts",
+    "test:unit": "tsx tests/test.ts",
+    "test:e2e": "tsx tests/test_game_e2e.ts",
+    "test:llm": "tsx scripts/llm_agent_smoke.ts",
+    "test:smoke": "tsx tests/test_http_smoke.ts",
+    "test:browser": "tsx tests/test_browser_sim.ts",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
+    "tsx": "^4.22.4",
     "typescript": "^5.7.2"
   },
   "dependencies": {

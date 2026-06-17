@@ -2,9 +2,9 @@
  * TUI Guided Test Server — 三国杀 TUI Manual Test Harness
  *
  * Usage:
- *   node --experimental-transform-types tests/mock_server.ts --port 9999
+ *   tsx tests/mock_server.ts --port 9999
  *   # Then connect TUI:
- *   node --experimental-transform-types cli/tui.ts --port 9999 --join any --name "Tester"
+ *   tsx cli/tui.ts --port 9999 --join any --name "Tester"
  *
  * Press [x] in TUI at any time to abort and report a bug.
  *
@@ -260,7 +260,7 @@ wss.on('connection', (socket: MinimalWebSocket) => {
 
 server.listen(PORT, () => {
   console.log(`TUI测试服务器 运行在 port ${PORT}`);
-  console.log(`连接: node --experimental-transform-types cli/tui.ts --port ${PORT} --join any --name "Tester"`);
+  console.log(`连接: tsx cli/tui.ts --port ${PORT} --join any --name "Tester"`);
   console.log(`\n测试场景:`);
   scenes.forEach(s => console.log(`  ${s.id}. ${s.name}: ${s.instruction}`));
   console.log(`\n等待TUI连接...`);

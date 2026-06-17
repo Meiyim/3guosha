@@ -11,11 +11,11 @@ const shaHandler: CardHandler = {
     const maxAttacks = player.equipment.weapon?.def.id === 'zhuge' ? 999 : 1;
     if (player.attackCount >= maxAttacks) return null;
     const target = targetId ? ctx.getPlayer(targetId) : ctx.getOpponent(player);
-    if (!target || !target.alive) return null;
+    if (!target || !ctx.canUseShaOn(player, target)) return null;
     player.attackCount++;
     ctx.useCard(player, cardIdx);
     ctx.log(`${player.name} 对 ${target.name} 使用了杀`);
-    ctx.setWaiting({ playerId: target.id, type: WaitingType.RESPOND_ATTACK, data: { source: player.id } });
+    ctx.setWaiting({ playerId: target.id, type: WaitingType.RESPOND_ATTACK, data: { source: player.id, card } });
     return ctx.waitingFor;
   }
 };

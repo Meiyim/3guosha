@@ -1,6 +1,7 @@
-import { WaitingType, ResolverType, ResolveResult, type GameState, type PlayerState, type CardInstance, type WaitingAction, type ResolutionItem, type GameContext, type GameEvent } from './types.ts';
+import { WaitingType, ResolverType, ResolveResult, TargetType, type GameState, type PlayerState, type CardInstance, type WaitingAction, type ResolutionItem, type GameContext, type GameEvent, type LegalAction, type PlayerObservation, type PublicGameState, type PrivateGameState } from './types.ts';
 import { buildDeck, shuffleDeck, getCardHandler } from './cards/index.ts';
 import { getHeroes, getSkill, getSkillsForEvent } from './heroes/index.ts';
+import { responseResolvers } from './resolvers/response.ts';
 import { gameLog } from '../logger.ts';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -20,6 +21,7 @@ export class Game implements GameContext {
   actionHistory: { turn: number; playerId: string; action: string; data: any; timestamp: number }[] = [];
 
   constructor(players: { id: string; name: string; heroId: string }[]) {
+    if (players.length < 2) throw new Error('Game requires at least 2 players');
     const deck = buildDeck();
     shuffleDeck(deck);
     this.state = {
@@ -65,6 +67,21 @@ export class Game implements GameContext {
     }
   }
 
+  step(playerId: string, action: LegalAction): { ok: boolean; error?: string } {
+    if (!this.legalActions(playerId).some(legal => this.sameAction(legal, action))) {
+      return { ok: false, error: 'illegal_action' };
+    }
+
+    switch (action.type) {
+      case 'play_card': this.playCard(playerId, action.cardUid, action.targetId); break;
+      case 'respond': this.respond(playerId, action.cardUid); break;
+      case 'discard_cards': this.discardCards(playerId, action.cardUids); break;
+      case 'end_play': this.endPlay(playerId); break;
+      case 'zhiheng': this.useZhiheng(playerId, action.cardUids); break;
+    }
+    return { ok: true };
+  }
+
   get currentPlayer(): PlayerState { return this.state.players[this.state.currentPlayerIdx]; }
 
   // GameContext implementation
@@ -84,19 +101,12 @@ export class Game implements GameContext {
     return drawn;
   }
 
-  dealDamage(target: PlayerState, amount: number, sourceId?: string): void {
+  dealDamage(target: PlayerState, amount: number, sourceId?: string, data?: { card?: CardInstance; afterRescue?: WaitingAction }): void {
     target.hp -= amount;
     this.log(`${target.name} 受到${amount}点伤害，剩余${target.hp}点体力`);
-    this.fireEvent('damage_taken', target);
+    this.fireEvent('damage_taken', target, { sourceId, card: data?.card });
     if (target.hp <= 0) {
-      target.alive = false;
-      this.log(`${target.name} 阵亡`);
-      const alive = this.state.players.filter(p => p.alive);
-      if (alive.length === 1) {
-        this.state.winner = alive[0].id;
-        this.log(`${alive[0].name} 获胜!`);
-        this.dumpState();
-      }
+      this.beginRescue(target, sourceId, data?.afterRescue);
     }
   }
 
@@ -106,6 +116,26 @@ export class Game implements GameContext {
 
   getPlayer(id: string): PlayerState | undefined { return this.state.players.find(p => p.id === id); }
   getOpponent(player: PlayerState): PlayerState | undefined { return this.state.players.find(p => p.id !== player.id && p.alive); }
+  getDistance(from: PlayerState, to: PlayerState): number {
+    if (from.id === to.id) return 0;
+    const alivePlayers = this.state.players.filter(p => p.alive);
+    const fromIdx = alivePlayers.findIndex(p => p.id === from.id);
+    const toIdx = alivePlayers.findIndex(p => p.id === to.id);
+    if (fromIdx < 0 || toIdx < 0) return Number.POSITIVE_INFINITY;
+    const aliveCount = alivePlayers.length;
+    const clockwise = (toIdx - fromIdx + aliveCount) % aliveCount;
+    const counterClockwise = (fromIdx - toIdx + aliveCount) % aliveCount;
+    let distance = Math.min(clockwise, counterClockwise);
+    if (from.equipment.horse_minus) distance -= 1;
+    if (to.equipment.horse_plus) distance += 1;
+    return Math.max(1, distance);
+  }
+
+  canUseShaOn(from: PlayerState, to: PlayerState): boolean {
+    if (from.id === to.id || !to.alive) return false;
+    const range = from.equipment.weapon?.def.id === 'zhuge' ? 1 : 1;
+    return this.getDistance(from, to) <= range;
+  }
 
   getPlayableUids(player: PlayerState): number[] {
     if (this.state.phase !== 'play' || this.currentPlayer.id !== player.id) return [];
@@ -118,6 +148,47 @@ export class Game implements GameContext {
     }).map(c => c.uid);
   }
 
+  legalActions(playerId: string): LegalAction[] {
+    const player = this.getPlayer(playerId);
+    if (!player || !player.alive || this.state.winner) return [];
+
+    const waiting = this.waitingFor;
+    if (waiting) {
+      if (waiting.playerId !== playerId) return [];
+      if (waiting.type === WaitingType.DISCARD) {
+        return this.cardCombinations(player.hand.map(c => c.uid), waiting.data?.count ?? 0)
+          .map(cardUids => ({ type: 'discard_cards', cardUids }));
+      }
+      const responseCards = player.hand.filter(card => this.canUseCardForResponse(player, card, waiting));
+      return [
+        ...responseCards.map(card => ({ type: 'respond' as const, cardUid: card.uid, cardId: card.def.id })),
+        { type: 'respond', cardUid: null },
+      ];
+    }
+
+    if (this.state.phase !== 'play' || this.currentPlayer.id !== playerId) return [];
+
+    const actions: LegalAction[] = [];
+    for (const card of player.hand) {
+      actions.push(...this.legalPlayCardActions(player, card));
+    }
+    if (this.hasSkill(player, 'zhiheng')) {
+      for (const card of player.hand) actions.push({ type: 'zhiheng', cardUids: [card.uid] });
+    }
+    actions.push({ type: 'end_play' });
+    return actions;
+  }
+
+  observe(playerId: string): PlayerObservation | null {
+    const player = this.getPlayer(playerId);
+    if (!player) return null;
+    return {
+      publicState: this.buildPublicState(),
+      privateState: this.buildPrivateState(playerId),
+      legalActions: this.legalActions(playerId),
+    };
+  }
+
   // Resolution stack — backward-compatible waitingFor getter
   get waitingFor(): WaitingAction | null {
     const top = this.state.resolutionStack[this.state.resolutionStack.length - 1];
@@ -125,7 +196,12 @@ export class Game implements GameContext {
   }
 
   setWaiting(action: WaitingAction): void {
-    this.pushResolution(action.type, action.playerId, action.type === WaitingType.DISCARD ? ResolverType.DISCARD : ResolverType.ATTACK, action.data);
+    const resolver = action.type === WaitingType.DISCARD
+      ? ResolverType.DISCARD
+      : action.type === WaitingType.RESPOND_RESCUE
+        ? ResolverType.RESCUE
+        : ResolverType.ATTACK;
+    this.pushResolution(action.type, action.playerId, resolver, action.data);
   }
 
   pushResolution(type: WaitingType, playerId: string, resolver: ResolverType, data?: any): void {
@@ -221,54 +297,8 @@ export class Game implements GameContext {
 
     // Pop current resolution
     const item = this.popResolution()!;
-
-    if (item.type === WaitingType.RESPOND_ATTACK) {
-      if (cardUid !== null) {
-        const idx = player.hand.findIndex(c => c.uid === cardUid);
-        if (idx !== -1 && player.hand[idx].def.id === 'shan') {
-          this.useCard(player, idx);
-          this.log(`${player.name} 使用了闪`);
-          return this.waitingFor;
-        }
-      }
-      this.dealDamage(player, 1, item.data?.source);
-      return this.waitingFor;
-    }
-
-    if (item.type === WaitingType.RESPOND_DUEL) {
-      if (cardUid !== null) {
-        const idx = player.hand.findIndex(c => c.uid === cardUid);
-        if (idx !== -1 && this.isValidAttackResponse(player, player.hand[idx])) {
-          this.useCard(player, idx);
-          this.log(`${player.name} 出杀`);
-          const opponent = this.getPlayer(item.data.opponent)!;
-          this.pushResolution(WaitingType.RESPOND_DUEL, opponent.id, ResolverType.DUEL, { opponent: player.id, source: item.data.source });
-          return this.waitingFor;
-        }
-      }
-      this.dealDamage(player, 1, item.data?.source);
-      return this.waitingFor;
-    }
-
-    if (item.type === WaitingType.RESPOND_BARBARIAN) {
-      if (cardUid !== null) {
-        const idx = player.hand.findIndex(c => c.uid === cardUid);
-        const needShan = item.data?.needShan;
-        if (idx !== -1) {
-          const card = player.hand[idx];
-          const valid = needShan ? card.def.id === 'shan' : this.isValidAttackResponse(player, card);
-          if (valid) { this.useCard(player, idx); this.log(`${player.name} 响应成功`); }
-          else { this.dealDamage(player, 1, item.data?.source); }
-        } else { this.dealDamage(player, 1, item.data?.source); }
-      } else { this.dealDamage(player, 1, item.data?.source); }
-
-      const nextTarget = item.data.remaining.find((id: string) => this.getPlayer(id)?.alive);
-      if (nextTarget) {
-        this.pushResolution(WaitingType.RESPOND_BARBARIAN, nextTarget, ResolverType.BARBARIAN, { ...item.data, remaining: item.data.remaining.filter((id: string) => id !== nextTarget) });
-      }
-      return this.waitingFor;
-    }
-    return this.waitingFor;
+    const resolver = responseResolvers[item.type];
+    return resolver ? resolver(this, item, player, cardUid) : this.waitingFor;
   }
 
   endPlay(playerId: string): void {
@@ -283,9 +313,17 @@ export class Game implements GameContext {
 
   discardCards(playerId: string, cardUids: number[]): void {
     const player = this.getPlayer(playerId);
-    if (!player || this.waitingFor?.playerId !== playerId) return;
+    const waiting = this.waitingFor;
+    if (!player || waiting?.playerId !== playerId || waiting.type !== WaitingType.DISCARD) return;
+    const required = waiting.data?.count ?? 0;
+    const uniqueUids = [...new Set(cardUids)];
+    const ownedCount = uniqueUids.filter(uid => player.hand.some(c => c.uid === uid)).length;
+    if (ownedCount !== required) {
+      this.log(`${player.name} 需要弃${required}张牌`);
+      return;
+    }
     this.recordAction(playerId, 'discard_cards', { cardUids });
-    for (const uid of cardUids) {
+    for (const uid of uniqueUids) {
       const idx = player.hand.findIndex(c => c.uid === uid);
       if (idx !== -1) this.state.discard.push(player.hand.splice(idx, 1)[0]);
     }
@@ -303,15 +341,187 @@ export class Game implements GameContext {
   }
 
   private endTurn(): void {
+    if (this.state.winner) return;
     this.state.resolutionStack = [];
     this.state.phase = 'end';
     this.fireEvent('turn_end', this.currentPlayer);
+    if (this.state.winner) return;
     this.dumpState();
-    let next = (this.state.currentPlayerIdx + 1) % this.state.players.length;
-    while (!this.state.players[next].alive) next = (next + 1) % this.state.players.length;
+    const next = this.findNextAlivePlayerIndex(this.state.currentPlayerIdx);
+    if (next < 0) return;
     this.state.currentPlayerIdx = next;
     this.state.turnNumber++;
     this.startTurn();
+  }
+
+  private findNextAlivePlayerIndex(fromIdx: number): number {
+    for (let offset = 1; offset <= this.state.players.length; offset++) {
+      const idx = (fromIdx + offset) % this.state.players.length;
+      if (this.state.players[idx].alive) return idx;
+    }
+    return -1;
+  }
+
+  private legalPlayCardActions(player: PlayerState, card: CardInstance): LegalAction[] {
+    const effectiveId = this.getEffectivePlayCardId(player, card);
+    const handler = getCardHandler(effectiveId);
+    if (!handler) return [];
+    if (handler.canPlay && !handler.canPlay(this, player, card)) return [];
+
+    if (handler.targetType === TargetType.SELF || handler.targetType === TargetType.ALL_OTHERS) {
+      return [{ type: 'play_card', cardUid: card.uid, cardId: effectiveId }];
+    }
+
+    return this.state.players
+      .filter(target => this.canTargetCard(player, card, effectiveId, target))
+      .map(target => ({ type: 'play_card', cardUid: card.uid, cardId: effectiveId, targetId: target.id }));
+  }
+
+  private getEffectivePlayCardId(player: PlayerState, card: CardInstance): string {
+    if (card.def.id !== 'sha' && this.hasSkill(player, 'wusheng') &&
+        (card.def.suit === 'heart' || card.def.suit === 'diamond') && card.def.type !== 'equipment') {
+      return 'sha';
+    }
+    return card.def.id;
+  }
+
+  private canTargetCard(player: PlayerState, card: CardInstance, effectiveId: string, target: PlayerState): boolean {
+    if (!target.alive || target.id === player.id) return false;
+    if (effectiveId === 'sha') return this.canUseShaOn(player, target);
+    if (effectiveId === 'juedou') return true;
+    return true;
+  }
+
+  private canUseCardForResponse(player: PlayerState, card: CardInstance, waiting: WaitingAction): boolean {
+    if (waiting.type === WaitingType.RESPOND_ATTACK) return card.def.id === 'shan';
+    if (waiting.type === WaitingType.RESPOND_DUEL) return this.isValidAttackResponse(player, card);
+    if (waiting.type === WaitingType.RESPOND_BARBARIAN) {
+      return waiting.data?.needShan ? card.def.id === 'shan' : this.isValidAttackResponse(player, card);
+    }
+    if (waiting.type === WaitingType.RESPOND_RESCUE) return card.def.id === 'tao';
+    return false;
+  }
+
+  private cardCombinations(values: number[], count: number): number[][] {
+    if (count < 0 || count > values.length) return [];
+    if (count === 0) return [[]];
+    const results: number[][] = [];
+    const walk = (start: number, chosen: number[]) => {
+      if (chosen.length === count) {
+        results.push(chosen.slice());
+        return;
+      }
+      for (let i = start; i < values.length; i++) {
+        chosen.push(values[i]);
+        walk(i + 1, chosen);
+        chosen.pop();
+      }
+    };
+    walk(0, []);
+    return results;
+  }
+
+  beginRescue(dying: PlayerState, sourceId?: string, afterRescue?: WaitingAction): void {
+    if (!dying.alive) return;
+    const responders = this.getRescueOrder(dying.id);
+    if (responders.length === 0) {
+      this.finalizeDeath(dying);
+      this.continueAfterRescue(afterRescue);
+      return;
+    }
+    this.log(`${dying.name} 进入濒死，等待桃救援`);
+    this.pushResolution(WaitingType.RESPOND_RESCUE, responders[0], ResolverType.RESCUE, {
+      dyingPlayerId: dying.id,
+      source: sourceId,
+      remaining: responders.slice(1),
+      afterRescue,
+    });
+  }
+
+  private getRescueOrder(dyingPlayerId: string): string[] {
+    const players = this.state.players;
+    const start = players.findIndex(p => p.id === dyingPlayerId);
+    if (start < 0) return [];
+    const ordered: PlayerState[] = [];
+    for (let i = 0; i < players.length; i++) {
+      ordered.push(players[(start + i) % players.length]);
+    }
+    return ordered.filter(p => p.alive).map(p => p.id);
+  }
+
+  finalizeDeath(player: PlayerState): void {
+    if (!player.alive) return;
+    player.alive = false;
+    this.log(`${player.name} 阵亡`);
+    const alive = this.state.players.filter(p => p.alive);
+    if (alive.length === 1) {
+      this.state.winner = alive[0].id;
+      this.log(`${alive[0].name} 获胜!`);
+      this.dumpState();
+    }
+  }
+
+  continueAfterRescue(action?: WaitingAction): void {
+    if (!action || this.state.winner) return;
+    const target = this.getPlayer(action.playerId);
+    if (!target?.alive) return;
+    const resolver = action.type === WaitingType.RESPOND_BARBARIAN ? ResolverType.BARBARIAN : ResolverType.ATTACK;
+    this.pushResolution(action.type, action.playerId, resolver, action.data);
+  }
+
+  private buildPublicState(): PublicGameState {
+    const s = this.state;
+    return {
+      players: s.players.map(p => ({
+        id: p.id,
+        name: p.name,
+        heroId: p.heroId,
+        hp: p.hp,
+        maxHp: p.maxHp,
+        handCount: p.hand.length,
+        equipment: Object.fromEntries(Object.entries(p.equipment).map(([slot, card]) => [slot, (card as CardInstance).def])),
+        alive: p.alive,
+      })),
+      currentPlayerIdx: s.currentPlayerIdx,
+      phase: s.phase,
+      deckCount: s.deck.length,
+      turnNumber: s.turnNumber,
+      waitingFor: this.waitingFor,
+    };
+  }
+
+  private buildPrivateState(playerId: string): PrivateGameState {
+    const me = this.getPlayer(playerId)!;
+    return {
+      myId: playerId,
+      myHand: me.hand,
+      playableUids: this.getPlayableUids(me),
+      legalActions: this.legalActions(playerId),
+    };
+  }
+
+  private sameAction(a: LegalAction, b: LegalAction): boolean {
+    if (a.type !== b.type) return false;
+    if (a.type === 'play_card' && b.type === 'play_card') {
+      return a.cardUid === b.cardUid && a.targetId === b.targetId;
+    }
+    if (a.type === 'respond' && b.type === 'respond') {
+      return a.cardUid === b.cardUid;
+    }
+    if (a.type === 'discard_cards' && b.type === 'discard_cards') {
+      return this.sameUidSet(a.cardUids, b.cardUids);
+    }
+    if (a.type === 'zhiheng' && b.type === 'zhiheng') {
+      return this.sameUidSet(a.cardUids, b.cardUids);
+    }
+    return true;
+  }
+
+  private sameUidSet(a: number[], b: number[]): boolean {
+    if (a.length !== b.length) return false;
+    const left = [...a].sort((x, y) => x - y);
+    const right = [...b].sort((x, y) => x - y);
+    return left.every((uid, i) => uid === right[i]);
   }
 
   private dumpState(): void {
@@ -337,7 +547,7 @@ export class Game implements GameContext {
     return this.actionHistory;
   }
 
-  private isValidAttackResponse(player: PlayerState, card: CardInstance): boolean {
+  isValidAttackResponse(player: PlayerState, card: CardInstance): boolean {
     if (card.def.id === 'sha') return true;
     if (this.hasSkill(player, 'wusheng') && (card.def.suit === 'heart' || card.def.suit === 'diamond')) return true;
     return false;

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Inspect game states & actions in human-readable format
-// Usage: node --experimental-transform-types scripts/inspect.ts <states_dir>
+// Usage: tsx scripts/inspect.ts <states_dir>
 
 import * as fs from 'fs';
 import * as path from 'path';

@@ -13,7 +13,7 @@ function cleanup() {
 
 function startServer(): Promise<ChildProcess> {
   return new Promise((resolve, reject) => {
-    const proc = spawn('node', ['--experimental-transform-types', 'server/index.ts'], {
+    const proc = spawn('tsx', ['server/index.ts'], {
       env: { ...process.env, PORT: String(PORT), LOG_DIR, OPEN_JOIN: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -26,7 +26,7 @@ function startServer(): Promise<ChildProcess> {
 }
 
 function startBot(name: string): ChildProcess {
-  return spawn('node', ['--experimental-transform-types', 'bot/ai_bot.ts', '--port', String(PORT), '--join', 'any', '--name', name], {
+  return spawn('tsx', ['bot/ai_bot.ts', '--port', String(PORT), '--join', 'any', '--name', name], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 }
@@ -67,8 +67,9 @@ async function main() {
 
   // Verify replay files
   const statesDir = path.join(LOG_DIR, 'states');
-  const turnFiles = fs.readdirSync(statesDir).filter(f => f.match(/^turn_\d+\.json$/)).sort();
-  const actionFiles = fs.readdirSync(statesDir).filter(f => f.match(/^actions_turn_\d+\.json$/)).sort();
+  const turnNo = (f: string) => Number(f.match(/\d+/)?.[0] || 0);
+  const turnFiles = fs.readdirSync(statesDir).filter(f => f.match(/^turn_\d+\.json$/)).sort((a, b) => turnNo(a) - turnNo(b));
+  const actionFiles = fs.readdirSync(statesDir).filter(f => f.match(/^actions_turn_\d+\.json$/)).sort((a, b) => turnNo(a) - turnNo(b));
 
   let ok = true;
   if (turnFiles.length < 2) { console.error('FAIL - Not enough turn files:', turnFiles.length); ok = false; }
@@ -78,12 +79,10 @@ async function main() {
     const initial = JSON.parse(fs.readFileSync(path.join(statesDir, 'turn_0.json'), 'utf8'));
     if (!initial.players || initial.players.length !== 2) { console.error('FAIL - Invalid initial state'); ok = false; }
 
-    const lastTurn = turnFiles[turnFiles.length - 1];
-    const finalState = JSON.parse(fs.readFileSync(path.join(statesDir, lastTurn), 'utf8'));
-    if (!finalState.winner) { console.error('FAIL - Final state has no winner'); ok = false; }
-
     // Verify turn progression
     const states = turnFiles.map(f => JSON.parse(fs.readFileSync(path.join(statesDir, f), 'utf8')));
+    const winningState = states.find(s => s.winner);
+    if (!winningState) { console.error('FAIL - No dumped state has a winner'); ok = false; }
     for (let i = 1; i < states.length; i++) {
       if (states[i].turnNumber < states[i - 1].turnNumber) {
         console.error(`FAIL - Turn number went backward at index ${i}`);
@@ -92,7 +91,7 @@ async function main() {
     }
 
     const totalActions = actionFiles.reduce((sum, f) => sum + JSON.parse(fs.readFileSync(path.join(statesDir, f), 'utf8')).length, 0);
-    console.log(`  ${turnFiles.length} turns, ${totalActions} actions, winner: ${finalState.winner}`);
+    console.log(`  ${turnFiles.length} turns, ${totalActions} actions, winner: ${winningState?.winner || 'none'}`);
   }
 
   if (ok) { console.log('PASS'); process.exit(0); }

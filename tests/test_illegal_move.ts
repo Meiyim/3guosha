@@ -80,7 +80,7 @@ console.log('\n=== Illegal Move Tests (Unit) ===\n');
 // Integration test via WebSocket
 async function startServer(): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    server = spawn('node', ['--experimental-transform-types', 'server/index.ts'], {
+    server = spawn('tsx', ['server/index.ts'], {
       env: { ...process.env, PORT: String(PORT) }, stdio: ['pipe', 'pipe', 'pipe']
     });
     server.stdout.on('data', (d: Buffer) => {
