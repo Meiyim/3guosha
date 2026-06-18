@@ -59,6 +59,20 @@ function getJson(path: string): Promise<{ status: number; data: any }> {
   });
 }
 
+function getText(path: string): Promise<{ status: number; body: string; contentType: string }> {
+  return new Promise((resolve, reject) => {
+    http.get({ ...BASE, path }, res => {
+      let body = '';
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => resolve({
+        status: res.statusCode || 0,
+        body,
+        contentType: String(res.headers['content-type'] || ''),
+      }));
+    }).on('error', reject);
+  });
+}
+
 async function connect(): Promise<HttpClient> {
   const res = await postJson('/api/action', { type: 'connect' });
   if (res.status !== 200 || !res.data.token || !res.data.playerId) {
@@ -184,6 +198,11 @@ async function testDevMode() {
   test('Dev mode can restart into a new AI room', restarted.ok === true && restarted.playerCount === 3);
   const restartedHeroes = await waitFor(dev, 'hero_selection');
   test('Restarted dev room reaches hero selection', restartedHeroes.heroes?.length > 0);
+
+  const left = await action(dev, { type: 'leave_game' });
+  test('Restarted dev room can be left cleanly', left.ok === true);
+  const roomLeft = await waitFor(dev, 'room_left');
+  test('Restarted dev room leave is acknowledged', roomLeft.type === 'room_left');
 }
 
 async function testDevMultiBotMode() {
@@ -208,10 +227,24 @@ async function testDevMultiBotMode() {
   test('Leaving current game acknowledges the client', roomLeft.type === 'room_left');
 }
 
+async function testManualEndpoint() {
+  console.log('\n=== HTTP Smoke: generated manual ===\n');
+
+  const manual = await getText('/api/manual');
+  test('Manual endpoint returns HTML', manual.status === 200 && manual.contentType.includes('text/html'),
+    `status=${manual.status} contentType=${manual.contentType}`);
+  test('Manual includes generated document shell', manual.body.includes('<!DOCTYPE html>') && manual.body.includes('<body>'));
+  test('Manual includes rule document content',
+    manual.body.includes('三国杀 Online 基础规则') && manual.body.includes('回合流程') && manual.body.includes('杀'));
+  test('Manual renders Markdown headings to HTML', manual.body.includes('<h1>三国杀 Online 基础规则</h1>'));
+  test('Manual does not leak top-level Markdown heading marker', !manual.body.includes('# 三国杀 Online 基础规则'));
+}
+
 async function main() {
   let server: any;
   try {
     server = await startServer();
+    await testManualEndpoint();
     await testNormalMode();
     await testDevMode();
     await testDevMultiBotMode();
