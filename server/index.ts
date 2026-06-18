@@ -1,13 +1,16 @@
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn, type ChildProcess } from 'child_process';
 import { fileURLToPath } from 'url';
 import { MinimalWebSocketServer } from './ws.ts';
-import { addDevBot, connectHttpClient, getCurrentPin, handleConnection, handleHttpAction, initRoom, leaveGame, pollHttpClient, setOpenJoin, startDevGame } from './room.ts';
+import { connectHttpClient, getCurrentPin, handleConnection, handleHttpAction, initRoom, leaveGame, pollHttpClient, setOpenJoin, startDevGame } from './room.ts';
 import { log } from './logger.ts';
 import { loadConfig } from './config.ts';
+import { getHeroes } from './game/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_DIR = path.join(__dirname, '..');
 const configFile = process.argv.find(a => a.endsWith('.yaml') || a.endsWith('.yml')) || process.env.CONFIG;
 const config = loadConfig(configFile);
 
@@ -18,6 +21,8 @@ if (process.env.OPEN_JOIN === '1' || config.server.open_join) setOpenJoin(true);
 
 const CLIENT_DIR = path.join(__dirname, '../client');
 const SHARED_DIR = path.join(__dirname, '../shared');
+const TSX_BIN = path.join(PROJECT_DIR, 'node_modules/.bin/tsx');
+let devBotProcesses: ChildProcess[] = [];
 
 const MIME = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
@@ -112,6 +117,41 @@ function sendJson(res: http.ServerResponse, status: number, data: any) {
   res.end(JSON.stringify(data));
 }
 
+function stopDevBots() {
+  for (const child of devBotProcesses) {
+    if (!child.killed) child.kill();
+  }
+  devBotProcesses = [];
+}
+
+function spawnDevBots(pin: string, playerCount: number, agentKind?: string) {
+  stopDevBots();
+  const botHeroIds = getHeroes().map(h => h.id).filter(id => id !== 'sunquan');
+  const botCount = Math.max(0, playerCount - 1);
+  for (let i = 0; i < botCount; i++) {
+    const name = `${i === 0 ? '开发对手' : `开发对手${i + 1}`}${agentKind === 'llm' ? '·LLM' : ''}`;
+    const heroId = botHeroIds[i % botHeroIds.length] || 'caocao';
+    const child = spawn(TSX_BIN, [
+      'bot/ai_bot.ts',
+      '--host', 'localhost',
+      '--port', String(PORT),
+      '--join', pin,
+      '--name', name,
+      '--hero', heroId,
+      '--agent', agentKind === 'llm' ? 'llm' : 'heuristic',
+      '--delay', '350',
+    ], {
+      cwd: PROJECT_DIR,
+      env: { ...process.env, PORT: String(PORT) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout?.on('data', data => log.debug(`[${name}] ${String(data).trim()}`));
+    child.stderr?.on('data', data => log.warn(`[${name}] ${String(data).trim()}`));
+    child.on('exit', code => log.debug(`${name} exited${code === null ? '' : ` code=${code}`}`));
+    devBotProcesses.push(child);
+  }
+}
+
 const server = http.createServer((req, res) => {
   if (req.url === '/api/action' && req.method === 'POST') {
     readJson(req).then(msg => {
@@ -128,15 +168,16 @@ const server = http.createServer((req, res) => {
         sendJson(res, 200, { ok: true, pin: getCurrentPin() });
         return;
       }
-      if (msg.type === 'add_dev_bot') {
-        sendJson(res, 200, { ok: addDevBot() });
-        return;
-      }
       if (msg.type === 'start_dev_game') {
-        sendJson(res, 200, { ok: startDevGame(msg.token, msg.name, msg.playerCount, msg.agent) });
+        const result = startDevGame(msg.token, msg.name, msg.playerCount);
+        if (result.ok && result.pin && result.playerCount) {
+          spawnDevBots(result.pin, result.playerCount, msg.agent);
+        }
+        sendJson(res, 200, result);
         return;
       }
       if (msg.type === 'leave_game') {
+        stopDevBots();
         sendJson(res, 200, { ok: leaveGame(msg.token) });
         return;
       }
@@ -177,3 +218,7 @@ server.listen(PORT, config.server.host, () => {
   const pin = initRoom();
   log.info(`三国杀 server running at http://${config.server.host}:${PORT} [mode=${config.game.mode}] PIN=${pin}`);
 });
+
+process.on('exit', stopDevBots);
+process.on('SIGINT', () => { stopDevBots(); process.exit(130); });
+process.on('SIGTERM', () => { stopDevBots(); process.exit(143); });

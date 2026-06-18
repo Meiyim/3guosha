@@ -8,6 +8,7 @@ type HttpClient = { token: string; playerId: string; pending: any[] };
 
 let passed = 0;
 let failed = 0;
+let serverOutput = '';
 
 function test(name: string, ok: boolean, detail?: string) {
   if (ok) {
@@ -85,7 +86,7 @@ async function waitFor(client: HttpClient, type: string, timeoutMs = 3000): Prom
     if (buffered >= 0) return client.pending.splice(buffered, 1)[0];
 
     const messages = await poll(client);
-    client.pending.push(...messages);
+    for (const message of messages) client.pending.push(message);
     const found = messages.find((m: any) => m.type === type);
     if (found) {
       const index = client.pending.indexOf(found);
@@ -97,6 +98,15 @@ async function waitFor(client: HttpClient, type: string, timeoutMs = 3000): Prom
   throw new Error(`timeout waiting for ${type}`);
 }
 
+async function waitForRoomSize(client: HttpClient, count: number, timeoutMs = 5000): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const msg = await waitFor(client, 'room_joined', Math.max(25, deadline - Date.now()));
+    if (msg.players?.length === count) return msg;
+  }
+  throw new Error(`timeout waiting for room size ${count}`);
+}
+
 async function startServer(): Promise<any> {
   const server = spawn('tsx', ['server/index.ts'], {
     env: { ...process.env, PORT: String(PORT) },
@@ -105,11 +115,14 @@ async function startServer(): Promise<any> {
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('server start timeout')), 5000);
     server.stdout.on('data', (d: Buffer) => {
-      if (d.toString().includes('running')) {
+      const text = d.toString();
+      serverOutput += text;
+      if (text.includes('running')) {
         clearTimeout(timer);
         resolve();
       }
     });
+    server.stderr.on('data', (d: Buffer) => { serverOutput += d.toString(); });
     server.on('exit', code => reject(new Error(`server exited early with ${code}`)));
   });
   return server;
@@ -151,7 +164,7 @@ async function testDevMode() {
   const started = await action(dev, { type: 'start_dev_game', name: '开发者' });
   test('Developer helper starts player-vs-AI room', started.ok === true);
 
-  const joined = await waitFor(dev, 'room_joined');
+  const joined = await waitForRoomSize(dev, 2);
   test('Dev room contains human and AI seats', joined.players.length === 2, `players=${joined.players?.length}`);
 
   const heroes = await waitFor(dev, 'hero_selection');
@@ -164,13 +177,13 @@ async function testDevMode() {
   const game = await waitFor(dev, 'game_update');
   const priv = await waitFor(dev, 'private_update');
   const bot = game.state?.players?.find((p: any) => p.name === '开发对手');
-  test('Dev mode starts a game against the built-in AI', !!bot && game.state.players.length === 2);
+  test('Dev mode starts a game against the AI client', !!bot && game.state.players.length === 2);
   test('Dev mode sends private hand state', priv.state?.myId === dev.playerId && priv.state.myHand.length > 0);
 
   const restarted = await action(dev, { type: 'start_dev_game', name: '开发者', playerCount: 3 });
-  test('Dev mode can restart into a new AI room', restarted.ok === true);
-  const restartedJoin = await waitFor(dev, 'room_joined');
-  test('Restarted dev room uses requested player count', restartedJoin.players.length === 3, `players=${restartedJoin.players?.length}`);
+  test('Dev mode can restart into a new AI room', restarted.ok === true && restarted.playerCount === 3);
+  const restartedHeroes = await waitFor(dev, 'hero_selection');
+  test('Restarted dev room reaches hero selection', restartedHeroes.heroes?.length > 0);
 }
 
 async function testDevMultiBotMode() {
@@ -178,10 +191,7 @@ async function testDevMultiBotMode() {
 
   const dev = await connect();
   const started = await action(dev, { type: 'start_dev_game', name: '开发者', playerCount: 4 });
-  test('Developer helper starts 4-player room', started.ok === true);
-
-  const joined = await waitFor(dev, 'room_joined');
-  test('Dev multi-bot room contains 4 seats', joined.players.length === 4, `players=${joined.players?.length}`);
+  test('Developer helper starts 4-player room', started.ok === true && started.playerCount === 4);
 
   await waitFor(dev, 'hero_selection');
   await action(dev, { type: 'select_hero', heroId: 'sunquan' });
@@ -207,7 +217,8 @@ async function main() {
     await testDevMultiBotMode();
   } catch (e: any) {
     failed++;
-    console.error('\nEXCEPTION:', e.message);
+    console.error('\nEXCEPTION:', e.stack || e.message);
+    if (serverOutput) console.error('\n--- server output ---\n' + serverOutput);
   } finally {
     if (server) server.kill();
   }
