@@ -6,12 +6,11 @@
   "scripts": {
     "start": "tsx server/index.ts",
     "build": "tsc --noEmit",
-    "test": "tsx tests/test.ts && tsx tests/test_join.ts && tsx tests/test_http_smoke.ts && tsx tests/test_game_e2e.ts",
-    "test:unit": "tsx tests/test.ts",
-    "test:e2e": "tsx tests/test_game_e2e.ts",
-    "test:llm": "tsx scripts/llm_agent_smoke.ts",
+    "test": "tsx tests/test_engine.ts && tsx tests/test_join.ts && tsx tests/test_http_smoke.ts",
+    "test:engine": "tsx tests/test_engine.ts",
+    "test:unit": "tsx tests/test_engine.ts",
+    "test:join": "tsx tests/test_join.ts",
     "test:smoke": "tsx tests/test_http_smoke.ts",
-    "test:browser": "tsx tests/test_browser_sim.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

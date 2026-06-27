@@ -11,6 +11,6 @@
     "allowImportingTsExtensions": true,
     "useDefineForClassFields": false
   },
-  "include": ["server/**/*.ts", "bot/**/*.ts"],
+  "include": ["server/**/*.ts", "bot/**/*.ts", "src/**/*.ts"],
   "exclude": ["tests/**/*.ts"]
 }

@@ -49,29 +49,6 @@ export enum WaitingType {
   DISCARD = 'discard',
 }
 
-export enum ResolverType {
-  ATTACK = 'attack',
-  DUEL = 'duel',
-  BARBARIAN = 'barbarian',
-  RESCUE = 'rescue',
-  WUXIE = 'wuxie',
-  DISCARD = 'discard',
-}
-
-export enum ResolveResult {
-  SUCCESS = 'success',
-  CANCELED = 'canceled',
-  PASSED = 'passed',
-}
-
-export interface ResolutionItem {
-  id: string;
-  type: WaitingType;
-  playerId: string;
-  resolver: ResolverType;
-  data?: any;
-}
-
 export interface WaitingAction {
   playerId: string;
   type: WaitingType;
@@ -98,7 +75,7 @@ export interface GameState {
   deck: CardInstance[];
   discard: CardInstance[];
   turnNumber: number;
-  resolutionStack: ResolutionItem[];
+  resolutionStack: unknown[];
   winner: string | null;
 }
 
@@ -157,41 +134,3 @@ export type ServerMsg =
   | { type: ServerMsgType.GAME_OVER; winner: string }
   | { type: ServerMsgType.ERROR; msg: string }
   | { type: ServerMsgType.LOG; msg: string };
-
-// Plugin interfaces
-export type GameEvent = 'turn_start' | 'turn_end' | 'before_play' | 'damage_taken' | 'respond_needed';
-
-export interface GameContext {
-  state: GameState;
-  readonly waitingFor: WaitingAction | null;
-  drawCards(player: PlayerState, count: number): CardInstance[];
-  dealDamage(target: PlayerState, amount: number, sourceId?: string, data?: { card?: CardInstance; afterRescue?: WaitingAction }): void;
-  useCard(player: PlayerState, cardIdx: number): void;
-  getPlayer(id: string): PlayerState | undefined;
-  getOpponent(player: PlayerState): PlayerState | undefined;
-  getDistance(from: PlayerState, to: PlayerState): number;
-  canUseShaOn(from: PlayerState, to: PlayerState): boolean;
-  setWaiting(action: WaitingAction): void;
-  log(msg: string): void;
-  hasSkill(player: PlayerState, skillId: string): boolean;
-}
-
-export enum TargetType {
-  SINGLE = 'single',       // pick one player (杀, 决斗)
-  ALL_OTHERS = 'all',      // all other players, no selection (南蛮, 万箭)
-  SELF = 'self',           // self or no target (桃, 无中生有, equipment)
-}
-
-export interface CardHandler {
-  targetType: TargetType;
-  canPlay?(ctx: GameContext, player: PlayerState, card: CardInstance): boolean;
-  onPlay(ctx: GameContext, player: PlayerState, card: CardInstance, cardIdx: number, targetId?: string): WaitingAction | null;
-}
-
-export interface SkillHandler {
-  id: string;
-  events: GameEvent[];
-  targetType?: TargetType;
-  trigger(ctx: GameContext, event: GameEvent, player: PlayerState, data?: any): void;
-  activeAction?(ctx: GameContext, player: PlayerState, cardUids: number[]): void;
-}
