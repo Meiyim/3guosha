@@ -33,7 +33,7 @@ Use developer mode when working alone:
 http://localhost:3000/?dev=1
 ```
 
-Developer mode creates a fresh 1v1 room for the current browser session, adds a built-in AI opponent named `开发对手`, and takes you directly to hero selection. Pick any hero and the game starts against the AI.
+Developer mode creates a fresh 1v1 room for the current browser session, spawns an AI client named `开发对手`, and takes you directly to hero selection. Pick any hero and the game starts against the AI.
 
 Developer mode can also create a local free-for-all table with multiple AI opponents:
 
@@ -41,9 +41,9 @@ Developer mode can also create a local free-for-all table with multiple AI oppon
 http://localhost:3000/?dev=1&players=4
 ```
 
-`players` is clamped to 2-8 total seats. The first seat is the browser player and the remaining seats are built-in AI opponents. This is intended as a local stepping stone toward the LLM agent arena.
+`players` is clamped to 2-8 total seats. The first seat is the browser player and the remaining seats are spawned AI clients that join over WebSocket. This is intended as a local stepping stone toward the LLM agent arena.
 
-The built-in opponent is a heuristic baseline agent implemented through the arena adapter interface in `server/arena/agents`. Agents receive an observation, inspect legal actions, and return one action:
+The default opponent is `bot/ai_bot.ts` using the heuristic baseline agent implemented through the arena adapter interface in `server/arena/agents`. Agents receive an observation, inspect legal actions, and return one action:
 
 ```text
 observe(playerId) -> legalActions -> act(observation) -> step(action)
@@ -51,7 +51,7 @@ observe(playerId) -> legalActions -> act(observation) -> step(action)
 
 The baseline currently uses simple deterministic heuristics:
 
-- selects 曹操
+- selects its assigned hero
 - responds with 闪/杀 when available
 - discards the required number of cards
 - plays 桃 when hurt, equipment, 无中生有, 杀, and simple trick cards
@@ -78,7 +78,7 @@ If no API key is available from the environment or Codex config, `npm run test:l
 ## Features
 
 - 1v1 duel mode
-- Developer free-for-all mode with multiple built-in AI opponents
+- Developer free-for-all mode with multiple spawned AI clients
 - 5 heroes: 刘备, 曹操, 孙权, 关羽, 甄姬
 - Cards: 杀/闪/桃, 决斗/南蛮入侵/万箭齐发/无中生有, 诸葛连弩/±1马
 - HTTP polling API (no WebSocket required on client)
@@ -124,8 +124,7 @@ The browser client uses HTTP polling so local development works even when WebSoc
 | `end_play` | — |
 | `discard_cards` | `cardUids[]` |
 | `zhiheng` | `cardUids[]` |
-| `add_dev_bot` | developer helper: add AI opponent to a waiting one-player room |
-| `start_dev_game` | developer helper: create a fresh player-vs-AI room |
+| `start_dev_game` | developer helper: create a fresh room and spawn AI clients |
 
 ## Tech Stack
 

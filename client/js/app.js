@@ -105,7 +105,7 @@
     if (pin.length !== 4) { $('lobby-status').textContent = '请输入4位PIN'; return; }
     send({ type: 'join_room', pin, name: $('join-name').value.trim() || '玩家' });
   };
-  $('btn-dev-bot').onclick = () => send({ type: 'add_dev_bot' });
+  $('btn-dev-bot').onclick = () => send({ type: 'start_dev_game', name: $('join-name').value.trim() || '开发者', playerCount: 2, agent: devAgent });
   $('btn-leave-game').onclick = () => {
     client.clearSelection();
     if (devMode) {

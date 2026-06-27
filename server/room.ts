@@ -1,16 +1,10 @@
 import { Game, getHeroes } from './game/index.ts';
-import { createHeuristicAgent, createOpenAIAgent } from './arena/agents/index.ts';
-import type { AgentAdapter } from './arena/agents/index.ts';
 import { log } from './logger.ts';
 
 // Single room — created on server start, resets after game ends
-let room: { pin: string; players: any[]; game: Game | null; state: string };
+let room: { pin: string; players: any[]; game: Game | null; state: string; targetPlayerCount: number };
 let openJoin = false;
 const httpClients = new Map<string, { id: string; queue: any[]; ws: any }>();
-let botActionTimer: ReturnType<typeof setTimeout> | null = null;
-const devBotAgent = createHeuristicAgent('dev-heuristic-bot', '开发启发式对手');
-const devLlmAgent = createOpenAIAgent({ timeoutMs: Number(process.env.DEV_LLM_AGENT_TIMEOUT_MS || 60000) });
-type DevAgentKind = 'heuristic' | 'llm';
 
 export function setOpenJoin(enabled: boolean) { openJoin = enabled; }
 let playerIdCounter = 1;
@@ -21,7 +15,7 @@ function generatePin(): string {
 
 export function initRoom(): string {
   const pin = generatePin();
-  room = { pin, players: [], game: null, state: 'waiting' };
+  room = { pin, players: [], game: null, state: 'waiting', targetPlayerCount: 2 };
   log.info(`Room ready: PIN=${pin}`);
   return pin;
 }
@@ -60,49 +54,21 @@ export function pollHttpClient(token: string): any[] | null {
   return client.queue.splice(0);
 }
 
-export function addDevBot(): boolean {
-  if (room.players.some(p => p.isBot)) return true;
-  if (room.state !== 'waiting' || room.players.length !== 1) return false;
-  const botId = `bot${playerIdCounter++}`;
-  const bot = { id: botId, name: '开发对手', heroId: 'caocao', isBot: true, ws: { readyState: 1, send() {} } };
-  room.players.push(bot);
-  room.state = 'hero_select';
-  const playerList = room.players.map(p => ({ id: p.id, name: p.name }));
-  for (const p of room.players) send(p.ws, { type: 'room_joined', players: playerList, pin: room.pin });
-  for (const p of room.players) send(p.ws, { type: 'hero_selection', heroes: getHeroes(), selectedHeroId: p.heroId || null });
-  send(bot.ws, { type: 'hero_selected', heroId: bot.heroId });
-  return true;
-}
-
-export function startDevGame(token: string, name?: string, playerCount?: number, agentKind?: string): boolean {
+export function startDevGame(token: string, name?: string, playerCount?: number): { ok: boolean; pin?: string; playerCount?: number } {
   const client = httpClients.get(token);
-  if (!client) return false;
-  clearBotActionTimer();
+  if (!client) return { ok: false };
   const pin = generatePin();
   const count = Math.max(2, Math.min(8, Math.floor(Number(playerCount) || 2)));
-  const botAgentKind: DevAgentKind = agentKind === 'llm' ? 'llm' : 'heuristic';
-  const botHeroIds = getHeroes().map(h => h.id).filter(id => id !== 'sunquan');
-  const bots = Array.from({ length: count - 1 }, (_, i) => ({
-    id: `bot${playerIdCounter++}`,
-    name: `${i === 0 ? '开发对手' : `开发对手${i + 1}`}${botAgentKind === 'llm' ? '·LLM' : ''}`,
-    heroId: botHeroIds[i % botHeroIds.length],
-    isBot: true,
-    agentKind: botAgentKind,
-    ws: { readyState: 1, send() {} },
-  }));
   room = {
     pin,
-    state: 'hero_select',
+    state: 'waiting',
     game: null,
-    players: [
-      { id: client.id, name: name || '开发者', ws: client.ws },
-      ...bots,
-    ],
+    targetPlayerCount: count,
+    players: [{ id: client.id, name: name || '开发者', ws: client.ws }],
   };
   send(client.ws, { type: 'room_joined', players: room.players.map(p => ({ id: p.id, name: p.name })), pin });
-  send(client.ws, { type: 'hero_selection', heroes: getHeroes(), selectedHeroId: null });
-  log.info(`Developer game ready: players=${count} agent=${botAgentKind} PIN=${pin}`);
-  return true;
+  log.info(`Developer room ready: players=${count} PIN=${pin}`);
+  return { ok: true, pin, playerCount: count };
 }
 
 export function leaveGame(token: string): boolean {
@@ -119,7 +85,6 @@ function leavePlayer(playerId: string, ws: any): boolean {
   }
 
   const others = room.players.filter(p => p.id !== playerId);
-  clearBotActionTimer();
   send(ws, { type: 'room_left' });
   for (const p of others) {
     send(p.ws, { type: 'room_closed', msg: `${leaving.name || '玩家'} 已离开房间` });
@@ -129,17 +94,9 @@ function leavePlayer(playerId: string, ws: any): boolean {
 }
 
 function resetRoom(): void {
-  clearBotActionTimer();
   const pin = generatePin();
-  room = { pin, players: [], game: null, state: 'waiting' };
+  room = { pin, players: [], game: null, state: 'waiting', targetPlayerCount: 2 };
   log.info(`New room ready: PIN=${pin}`);
-}
-
-function clearBotActionTimer(): void {
-  if (botActionTimer) {
-    clearTimeout(botActionTimer);
-    botActionTimer = null;
-  }
 }
 
 export function handleConnection(ws: any) {
@@ -158,12 +115,12 @@ function handleMessage(ws: any, playerId: string, msg: any) {
     case 'join_room': {
       if (!openJoin && room.pin !== msg.pin) { send(ws, { type: 'error', msg: '房间不存在或已开始' }); return; }
       if (room.state !== 'waiting') { send(ws, { type: 'error', msg: '房间不存在或已开始' }); return; }
-      if (room.players.length >= 2) { send(ws, { type: 'error', msg: '房间已满' }); return; }
+      if (room.players.length >= room.targetPlayerCount) { send(ws, { type: 'error', msg: '房间已满' }); return; }
       room.players.push({ id: playerId, name: msg.name || 'Player', ws });
       log.info(`${msg.name||'Player'}(${playerId}) joined room PIN=${room.pin}`);
       const playerList = room.players.map(p => ({ id: p.id, name: p.name }));
       for (const p of room.players) send(p.ws, { type: 'room_joined', players: playerList, pin: room.pin });
-      if (room.players.length === 2) {
+      if (room.players.length === room.targetPlayerCount) {
         room.state = 'hero_select';
         for (const p of room.players) send(p.ws, { type: 'hero_selection', heroes: getHeroes() });
       }
@@ -228,8 +185,6 @@ function broadcastState() {
   if (room.game!.state.winner) {
     log.info(`Game ended. Winner: ${room.game!.state.winner}. Resetting room.`);
     resetRoom();
-  } else {
-    scheduleDevBotAction();
   }
 }
 
@@ -253,62 +208,3 @@ function buildPrivateState(game: Game, forPlayerId: string) {
 }
 
 function send(ws: any, msg: any) { if (ws.readyState === 1) ws.send(JSON.stringify(msg)); }
-
-function scheduleDevBotAction() {
-  if (botActionTimer || !room.game) return;
-  const bot = getActionableDevBot();
-  if (!bot) return;
-  botActionTimer = setTimeout(() => {
-    botActionTimer = null;
-    const nextBot = getActionableDevBot();
-    if (nextBot) runDevBotAction(nextBot.id).catch(err => log.warn(`Dev bot action failed: ${err.message}`));
-  }, 350);
-}
-
-function getActionableDevBot() {
-  if (!room.game) return null;
-  const waiting = room.game.waitingFor;
-  if (waiting) {
-    return room.players.find(p => p.isBot && p.id === waiting.playerId) || null;
-  }
-  const current = room.game.currentPlayer;
-  if (room.game.state.phase === 'play') {
-    return room.players.find(p => p.isBot && p.id === current.id) || null;
-  }
-  return null;
-}
-
-async function runDevBotAction(botId: string) {
-  if (!room.game || room.game.state.winner) return;
-  const game = room.game;
-  const bot = game.getPlayer(botId);
-  if (!bot || !bot.alive) return;
-  const observation = game.observe(botId);
-  if (!observation) return;
-  const seat = room.players.find(p => p.id === botId);
-  const agent = getDevAgent(seat?.agentKind);
-  let action = await agent.act(observation);
-  if (!action && agent !== devBotAgent) action = await devBotAgent.act(observation);
-  if (action) game.step(botId, action);
-  broadcastState();
-}
-
-function getDevAgent(kind?: DevAgentKind): AgentAdapter {
-  return kind === 'llm' ? withFallback(devLlmAgent) : devBotAgent;
-}
-
-function withFallback(agent: AgentAdapter): AgentAdapter {
-  return {
-    ...agent,
-    async act(observation) {
-      try {
-        const action = await agent.act(observation);
-        if (!action) log.warn(`${agent.name} returned no action; falling back to heuristic`);
-        return action;
-      } catch (err: any) {
-        log.warn(`${agent.name} failed: ${err.message}; falling back to heuristic`);
-        return devBotAgent.act(observation);
-      }
-    },
-  };
-}
