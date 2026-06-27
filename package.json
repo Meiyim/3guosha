@@ -6,9 +6,11 @@
   "scripts": {
     "start": "tsx server/index.ts",
     "build": "tsc --noEmit",
-    "test": "tsx tests/test_engine.ts && tsx tests/test_join.ts && tsx tests/test_http_smoke.ts",
+    "test": "tsx tests/test_engine.ts && tsx tests/game/index.ts && tsx tests/test_join.ts && tsx tests/test_http_smoke.ts",
     "test:engine": "tsx tests/test_engine.ts",
-    "test:unit": "tsx tests/test_engine.ts",
+    "test:game": "tsx tests/game/index.ts",
+    "test:unit": "tsx tests/test_engine.ts && tsx tests/game/index.ts",
+    "inspect:game": "tsx tests/game/inspect.ts",
     "test:join": "tsx tests/test_join.ts",
     "test:smoke": "tsx tests/test_http_smoke.ts",
     "typecheck": "tsc --noEmit"

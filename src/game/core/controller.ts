@@ -7,6 +7,14 @@ import type { GameState, PlayerState, WinnerState } from './state.ts';
 import { getAlivePlayers, getCurrentPlayer, getPlayer } from './state.ts';
 import type { ActionResolutionResult, CriterionResult, ResolutionFrame } from './resolution.ts';
 import { acceptActionResponse, acceptCardRespond, currentFramePlayer, emptyResolutionResult } from './resolution.ts';
+import {
+  diffGameState,
+  formatTraceLog,
+  snapshotGameState,
+  type GameTraceEvent,
+  type GameTraceEventPayload,
+  type TraceFormatOptions,
+} from './trace.ts';
 
 export interface GameControllerOptions {
   shuffleSeed: string;
@@ -21,6 +29,8 @@ export interface DispatchResult {
 
 export abstract class GameController {
   private frameCounter = 0;
+  private traceCounter = 0;
+  private traceLog: GameTraceEvent[] = [];
 
   constructor(
     protected state: GameState,
@@ -30,6 +40,19 @@ export abstract class GameController {
 
   getState(): GameState {
     return this.state;
+  }
+
+  getTraceLog(): readonly GameTraceEvent[] {
+    return this.traceLog;
+  }
+
+  clearTraceLog(): void {
+    this.traceLog = [];
+    this.traceCounter = 0;
+  }
+
+  formatTraceLog(options?: TraceFormatOptions): string {
+    return formatTraceLog(this.traceLog, options);
   }
 
   nextFrameId(): string {
@@ -76,14 +99,17 @@ export abstract class GameController {
   }
 
   dispatch(action: Action): DispatchResult {
+    this.emitTrace({ type: 'dispatch_start', action });
     const legal = this.getLegalActions((action as any).playerId);
     if (this.isPlayerSubmittedAction(action) && !legal.some(candidate => sameAction(candidate, action))) {
+      this.emitTrace({ type: 'dispatch_rejected', action, error: 'illegal_action' });
       return { ok: false, state: this.state, effects: [], error: 'illegal_action' };
     }
 
     const effects: Effect[] = [];
     this.interpretActionProgram([action], effects);
 
+    this.emitTrace({ type: 'dispatch_end', action, effects: [...effects] });
     return { ok: true, state: this.state, effects };
   }
 
@@ -97,10 +123,12 @@ export abstract class GameController {
   }
 
   private interpretAction(action: Action, effects: Effect[]): Action[] {
+    this.emitTrace({ type: 'action_interpret_start', action });
     this.state.actionLog.push({ action, timestamp: Date.now() });
 
     const frame = this.topFrame();
     if (frame && this.isFrameSubmittedAction(action)) {
+      this.emitTrace({ type: 'frame_action_received', frame, action });
       return this.acceptFrameAction(frame, action).actions;
     }
 
@@ -110,15 +138,20 @@ export abstract class GameController {
     }
 
     const result = this.resolveAction(action);
+    this.emitTrace({ type: 'action_resolved', action, result });
     this.pushNextFrame(result.frames);
     return result.actions;
   }
 
   private applyPrimitiveAction(action: Action, effects: Effect[]): void {
     const primitiveEffects = this.resolvePrimitiveAction(action);
+    this.emitTrace({ type: 'primitive_resolved', action, effects: primitiveEffects });
     for (const effect of primitiveEffects) {
+      const before = snapshotGameState(this.state);
       applyEffect(this.state, effect);
       effects.push(effect);
+      this.emitTrace({ type: 'effect_applied', effect });
+      this.emitStateChanges(effect, before);
       this.applyEndStateIfReached(effects);
     }
   }
@@ -196,10 +229,12 @@ export abstract class GameController {
     if (frame.criterion.type === 'action_response') {
       if (action.type === 'card_play') {
         const resolved = this.resolveAction(action);
+        this.emitTrace({ type: 'action_resolved', action, result: resolved });
         const marker = resolved.actions.find(candidate => frame.criterion.type === 'action_response'
           && frame.criterion.actionTypes.includes(candidate.type));
         if (!marker) return { status: 'pending', frame, actions: [] };
         const rest = resolved.actions.filter(candidate => candidate !== marker);
+        this.emitTrace({ type: 'frame_marker_selected', frame, marker, remainingActions: rest });
         const accepted = acceptActionResponse(frame, marker);
         const applied = this.applyCriterionResult(accepted);
         return { ...applied, actions: [...rest, ...applied.actions] };
@@ -213,15 +248,21 @@ export abstract class GameController {
   private applyCriterionResult(result: CriterionResult): CriterionResult {
     if (result.status === 'pending') {
       this.state.resolutionStack[this.state.resolutionStack.length - 1] = result.frame;
+      this.emitTrace({ type: 'criterion_pending', frame: result.frame, actions: result.actions });
       return result;
     }
+    const completedFrame = this.state.resolutionStack[this.state.resolutionStack.length - 1];
+    if (completedFrame) this.emitTrace({ type: 'criterion_completed', frame: completedFrame, actions: result.actions });
     this.state.resolutionStack.pop();
     return result;
   }
 
   private pushNextFrame(frames: ResolutionFrame[]): void {
     const [first] = frames;
-    if (first) this.state.resolutionStack.push(first);
+    if (first) {
+      this.state.resolutionStack.push(first);
+      this.emitTrace({ type: 'frame_pushed', frame: first });
+    }
   }
 
   private topFrame(): ResolutionFrame | undefined {
@@ -256,8 +297,26 @@ export abstract class GameController {
     const winner = this.isEndState(this.state);
     if (!winner) return;
     const effect: Effect = { type: 'set_winner', winner };
+    const before = snapshotGameState(this.state);
     applyEffect(this.state, effect);
     effects.push(effect);
+    this.emitTrace({ type: 'effect_applied', effect });
+    this.emitStateChanges(effect, before);
+  }
+
+  protected emitTrace(event: GameTraceEventPayload): void {
+    this.traceLog.push({
+      index: this.traceCounter,
+      timestamp: Date.now(),
+      resolutionDepth: this.state.resolutionStack.length,
+      ...event,
+    });
+    this.traceCounter += 1;
+  }
+
+  private emitStateChanges(effect: Effect, before: ReturnType<typeof snapshotGameState>): void {
+    const changes = diffGameState(before, snapshotGameState(this.state));
+    if (changes.length > 0) this.emitTrace({ type: 'state_changed', effect, changes });
   }
 }
 

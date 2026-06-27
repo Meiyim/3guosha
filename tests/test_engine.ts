@@ -4,6 +4,7 @@ import {
   createBasicRuleInterpreter,
   createDualGameState,
   renderRuleModuleMermaid,
+  reprGameState,
   type CardInstance,
 } from '../src/game/index.ts';
 
@@ -66,6 +67,16 @@ test('compiled 3gs module can render AST and IR mermaid graphs', () => {
   assert.ok(graph.includes('TimingAst: play_phase'));
   assert.ok(graph.includes('CardRuleIr: sha'));
   assert.ok(graph.includes('open_sha_response_frame damageAmount=1'));
+});
+
+test('game state has an indented human-readable repr', () => {
+  const controller = makeController([card('c_sha', 'sha')], ['c_sha'], []);
+  const repr = reprGameState(controller.getState(), { includeCards: true });
+
+  assert.ok(repr.includes('GameState(game_1)'));
+  assert.ok(repr.includes('  turn:\n    currentPlayerId: p1'));
+  assert.ok(repr.includes('  Player(p1)\n    name: Player 1'));
+  assert.ok(repr.includes('  Card(c_sha)\n    cardId: sha'));
 });
 
 test('tao heals and moves card to discard pile', () => {

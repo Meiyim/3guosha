@@ -4,6 +4,7 @@ export * from './core/controller.ts';
 export * from './core/effect.ts';
 export * from './core/resolution.ts';
 export * from './core/state.ts';
+export * from './core/trace.ts';
 export * from './language/ast.ts';
 export * from './language/compiler.ts';
 export * from './language/graph.ts';
